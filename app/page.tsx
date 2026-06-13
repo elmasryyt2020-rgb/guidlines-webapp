@@ -9,7 +9,7 @@ export default function Home() {
     <div className="min-h-screen bg-[#F3F4F6] text-black font-sans py-12 px-4 sm:px-6 lg:px-8 flex flex-col justify-center items-center">
       <div className="max-w-xl w-full border-brutal-thick bg-yellow-brutal p-8 shadow-brutal-lg space-y-6 text-center">
         <header className="space-y-2">
-          <div className="w-16 h-16 rounded-full border-3 border-black bg-lime-brutal flex items-center justify-center mx-auto shadow-brutal mb-4">
+          <div className="w-16 h-16 rounded-full border-brutal bg-lime-brutal flex items-center justify-center mx-auto shadow-brutal mb-4">
             <ShieldCheck className="w-9 h-9 text-black stroke-[2.5]" />
           </div>
           <h1 className="font-display text-3xl sm:text-4xl font-black uppercase tracking-tight text-black">
