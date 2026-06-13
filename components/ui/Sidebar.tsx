@@ -26,11 +26,11 @@ export default function Sidebar() {
   const getStatusStyles = () => {
     switch (syncStatus) {
       case "synced":
-        return { bg: "bg-lime-brutal", label: "Synced", border: "border-black" };
+        return { bg: "bg-lime-brutal", label: "Synced" };
       case "syncing":
-        return { bg: "bg-yellow-brutal", label: "Syncing", border: "border-black" };
+        return { bg: "bg-yellow-brutal", label: "Syncing" };
       default:
-        return { bg: "bg-pink-brutal", label: "Offline", border: "border-black" };
+        return { bg: "bg-pink-brutal", label: "Offline" };
     }
   };
 
@@ -98,7 +98,7 @@ export default function Sidebar() {
                     setActivePane("chat");
                   }
                 }}
-                className={`w-full text-left p-3 border-2 border-black flex items-center gap-3 transition-all duration-150 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[4px_4px_0px_0px_#000] ${
+                className={`w-full text-left p-3 border-2 border-black flex items-center gap-3 transition-all duration-150 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[4px_4px_0px_0px_#000] active:translate-x-0 active:translate-y-0 active:shadow-none ${
                   isActive ? "bg-cyan-brutal" : "bg-white"
                 }`}
               >
@@ -163,7 +163,7 @@ export default function Sidebar() {
           </div>
           {!sidebarCollapsed && (
             <button
-              className="press-effect p-1 border border-black hover:bg-gray-100"
+              className="p-1 border-2 border-black shadow-[1px_1px_0px_0px_#000] hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[2px_2px_0px_0px_#000] active:translate-x-0 active:translate-y-0 active:shadow-none hover:bg-gray-100"
               title="Mock Logout"
             >
               <LogOut className="w-3.5 h-3.5 text-black" />
