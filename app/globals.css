@@ -44,12 +44,12 @@ body {
 @utility press-effect {
   transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 
-  &:hover {
+  &:hover:not(:disabled):not(.disabled) {
     transform: translate(-4px, -4px);
     box-shadow: 6px 6px 0px 0px rgba(0,0,0,1);
   }
 
-  &:active {
+  &:active:not(:disabled):not(.disabled) {
     transform: translate(0px, 0px);
     box-shadow: none;
   }

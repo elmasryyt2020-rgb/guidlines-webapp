@@ -10,21 +10,42 @@ import { BookOpen } from "lucide-react";
 export default function ChatPanel() {
   const { activeConversationId, messages, addMessage, updateLastMessage, setSyncStatus } = useChatStore();
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   const activeMessages = useMemo(() => {
     return activeConversationId ? messages[activeConversationId] || [] : [];
   }, [activeConversationId, messages]);
   const isAssistantStreaming = activeMessages.some((msg) => msg.role === "assistant" && msg.isStreaming);
 
-  // Auto-scroll to bottom of thread
+  // Cleanup stream when user switches conversations or unmounts
   useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    return () => {
+      if (cleanupRef.current) {
+        cleanupRef.current();
+        cleanupRef.current = null;
+      }
+    };
+  }, [activeConversationId]);
+
+  // Scroll to bottom under proper UX rules (if user sent message or user is already close to bottom)
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+    const isUserLast = activeMessages.length > 0 && activeMessages[activeMessages.length - 1].role === "user";
+    const isCloseToBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    if (isUserLast || isCloseToBottom) {
+      container.scrollTop = container.scrollHeight;
     }
   }, [activeMessages]);
 
   const handleSendMessage = (text: string) => {
     if (!activeConversationId) return;
+
+    // Clear existing stream if any
+    if (cleanupRef.current) {
+      cleanupRef.current();
+      cleanupRef.current = null;
+    }
 
     // 1. Add User Message
     const userMessageId = `msg-${Date.now()}`;
@@ -51,11 +72,12 @@ export default function ChatPanel() {
     // 4. Retrieve matching mock answer and stream
     const matchedContent = getMockResponse(text);
     
-    simulateStreaming(matchedContent, (chunk, isStreaming) => {
+    cleanupRef.current = simulateStreaming(matchedContent, (chunk, isStreaming) => {
       updateLastMessage(activeConversationId, chunk, isStreaming);
       if (!isStreaming) {
         // Completed stream - mark synced
         setSyncStatus("synced");
+        cleanupRef.current = null;
       }
     });
   };

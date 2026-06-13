@@ -48,14 +48,16 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
       }
       // Bullet lists
       if (line.startsWith("* ") || line.startsWith("- ")) {
-        // Parse bold text inside list items: **text**
         const parts = line.substring(2).split("**");
         return (
-          <li key={idx} className="ml-4 list-disc text-sm font-sans font-medium mb-1 pl-1 text-black/90">
-            {parts.map((part, pIdx) =>
-              pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
-            )}
-          </li>
+          <div key={idx} className="ml-4 flex items-start gap-2 text-sm font-sans font-medium mb-1 pl-1 text-black/90">
+            <span className="text-lime-brutal font-black select-none shrink-0">•</span>
+            <span>
+              {parts.map((part, pIdx) =>
+                pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
+              )}
+            </span>
+          </div>
         );
       }
       // Numbered lists
