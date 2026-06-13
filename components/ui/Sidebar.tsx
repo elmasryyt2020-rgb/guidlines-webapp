@@ -1,25 +1,27 @@
 "use client";
 
 import React from "react";
+import { useAuth, useUser, UserButton } from "@clerk/nextjs";
 import { useUIStore, useChatStore } from "@/lib/store";
 import {
   Plus,
   Menu,
   ChevronLeft,
   Database,
-  LogOut,
-  User,
   MessageSquare,
   Activity
 } from "lucide-react";
 
 export default function Sidebar() {
+  const { user } = useUser();
+  const { userId, getToken } = useAuth();
   const { sidebarCollapsed, toggleSidebar, activePane, setActivePane } = useUIStore();
   const { conversations, activeConversationId, selectConversation, createNewConversation, syncStatus } = useChatStore();
 
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
+    if (!userId) return;
     const title = `Consultation ${conversations.length + 1}`;
-    createNewConversation(title);
+    await createNewConversation(title, userId, getToken);
     setActivePane("chat");
   };
 
@@ -71,7 +73,8 @@ export default function Sidebar() {
         <div className="p-3">
           <button
             onClick={handleNewChat}
-            className="press-effect w-full border-brutal bg-lime-brutal p-3 font-display font-extrabold uppercase text-sm shadow-brutal flex items-center justify-center gap-2 cursor-pointer"
+            disabled={!userId}
+            className="press-effect w-full border-brutal bg-lime-brutal p-3 font-display font-extrabold uppercase text-sm shadow-brutal flex items-center justify-center gap-2 cursor-pointer disabled:opacity-55 disabled:pointer-events-none"
           >
             <Plus className="w-5 h-5 stroke-[2.5]" />
             {!sidebarCollapsed && <span>New Consult</span>}
@@ -147,28 +150,20 @@ export default function Sidebar() {
           }`}
         >
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-full border-2 border-black bg-pink-brutal flex items-center justify-center shrink-0 shadow-[1px_1px_0px_0px_#000]">
-              <User className="w-4 h-4 text-black stroke-[2.5]" />
+            <div className="shrink-0">
+              <UserButton />
             </div>
             {!sidebarCollapsed && (
               <div className="min-w-0">
                 <div className="font-display font-black text-xs uppercase truncate">
-                  Dr. CA
+                  {user?.fullName || "Dr. CA"}
                 </div>
                 <div className="font-sans text-[10px] font-semibold text-black/50 truncate">
-                  ENT Specialist
+                  {user?.primaryEmailAddress?.emailAddress || "ENT Specialist"}
                 </div>
               </div>
             )}
           </div>
-          {!sidebarCollapsed && (
-            <button
-              className="p-1 border-2 border-black shadow-[1px_1px_0px_0px_#000] hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[2px_2px_0px_0px_#000] active:translate-x-0 active:translate-y-0 active:shadow-none hover:bg-gray-100"
-              title="Mock Logout"
-            >
-              <LogOut className="w-3.5 h-3.5 text-black" />
-            </button>
-          )}
         </div>
       </div>
     </aside>

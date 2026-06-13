@@ -1,10 +1,14 @@
 "use client";
 
 import React from "react";
+import { useAuth } from "@clerk/nextjs";
+import { useChatStore } from "@/lib/store";
 import { useMindMapStore } from "@/lib/mindmapStore";
 import { X, Sparkles, BookOpen, Layers } from "lucide-react";
 
 export default function RecommendationDrawer() {
+  const { getToken } = useAuth();
+  const { activeConversationId } = useChatStore();
   const { selectedNode, drawerOpen, closeDrawer, brainstormOnNode } = useMindMapStore();
 
   if (!drawerOpen || !selectedNode) return null;
@@ -88,8 +92,13 @@ export default function RecommendationDrawer() {
       {/* Drawer Action Footer */}
       <div className="p-4 border-t-[3px] border-black bg-slate-50 shrink-0">
         <button
-          onClick={() => brainstormOnNode(selectedNode.id)}
-          className="w-full press-effect border-[3px] border-black bg-pink-brutal hover:bg-pink-400 py-3 font-display font-black text-sm uppercase shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] transition-all duration-150 active:translate-x-0 active:translate-y-0 active:shadow-none flex items-center justify-center gap-2 cursor-pointer"
+          onClick={() => {
+            if (activeConversationId) {
+              brainstormOnNode(activeConversationId, selectedNode.id, getToken);
+            }
+          }}
+          disabled={!activeConversationId}
+          className="w-full press-effect border-[3px] border-black bg-pink-brutal hover:bg-pink-400 py-3 font-display font-black text-sm uppercase shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] transition-all duration-150 active:translate-x-0 active:translate-y-0 active:shadow-none flex items-center justify-center gap-2 cursor-pointer disabled:opacity-55 disabled:pointer-events-none"
         >
           <Sparkles className="w-4 h-4 stroke-[2.5]" />
           Brainstorm on this
