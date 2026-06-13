@@ -1,13 +1,17 @@
--- Reset tables if they already exist from a previous version of the project
+-- Clean up existing tables to ensure a clean state
 drop table if exists public.mind_maps cascade;
 drop table if exists public.messages cascade;
 drop table if exists public.conversations cascade;
 drop table if exists public.guideline_chunks cascade;
 
--- 1. Enable pgvector extension
+-- Clean up existing functions
+drop function if exists public.match_guidelines(vector, float, int) cascade;
+drop function if exists public.handle_updated_at() cascade;
+
+-- Enable pgvector extension
 create extension if not exists vector;
 
--- 2. Create guideline_chunks table (for Gemini 768-dim embeddings)
+-- Create guideline_chunks table (for Gemini 768-dim embeddings)
 create table public.guideline_chunks (
     id uuid default gen_random_uuid() primary key,
     file_name text not null,
@@ -22,10 +26,10 @@ create index guideline_chunks_embedding_idx
 on public.guideline_chunks 
 using hnsw (embedding vector_cosine_ops);
 
--- 3. Create conversations table
+-- Create conversations table
 create table public.conversations (
     id uuid default gen_random_uuid() primary key,
-    user_id text not null, -- Stores Clerk user_id
+    user_id text not null,
     title text not null default 'New Conversation',
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
@@ -34,7 +38,7 @@ create table public.conversations (
 -- Index user_id for faster lookup of user's conversations
 create index conversations_user_id_idx on public.conversations(user_id);
 
--- 4. Create messages table
+-- Create messages table
 create table public.messages (
     id uuid default gen_random_uuid() primary key,
     conversation_id uuid references public.conversations(id) on delete cascade not null,
@@ -46,7 +50,7 @@ create table public.messages (
 -- Index conversation_id for faster message retrieval
 create index messages_conversation_id_idx on public.messages(conversation_id);
 
--- 5. Create mind_maps table
+-- Create mind_maps table
 create table public.mind_maps (
     id uuid default gen_random_uuid() primary key,
     conversation_id uuid references public.conversations(id) on delete cascade not null,
@@ -59,7 +63,7 @@ create table public.mind_maps (
 -- Index conversation_id for faster mind map retrieval
 create index mind_maps_conversation_id_idx on public.mind_maps(conversation_id);
 
--- 6. Helper function to update updated_at timestamps
+-- Helper function to update updated_at timestamps
 create or replace function public.handle_updated_at()
 returns trigger as $$
 begin
@@ -79,7 +83,7 @@ create trigger set_mind_maps_updated_at
     for each row
     execute function public.handle_updated_at();
 
--- 7. Stored SQL function for vector similarity search
+-- Stored SQL function for vector similarity search
 create or replace function public.match_guidelines (
     query_embedding vector(768),
     match_threshold float,
@@ -104,12 +108,12 @@ as $$
     limit match_count;
 $$;
 
--- 8. Enable Row Level Security (RLS)
+-- Enable Row Level Security (RLS)
 alter table public.conversations enable row level security;
 alter table public.messages enable row level security;
 alter table public.mind_maps enable row level security;
 
--- 9. Create RLS policies using Clerk user_id matching
+-- Create RLS policies using Clerk user_id matching
 -- Conversations Policy
 create policy "Users can manage their own conversations"
 on public.conversations for all
