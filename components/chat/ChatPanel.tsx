@@ -2,13 +2,29 @@
 
 import React, { useRef, useEffect, useMemo } from "react";
 import { useChatStore } from "@/lib/store";
-import { getMockResponse, simulateStreaming } from "@/lib/streaming";
+import { useMindMapStore } from "@/lib/mindmapStore";
+import { useAuth, useUser } from "@clerk/nextjs";
 import ChatBubble from "./ChatBubble";
 import ChatInput from "./ChatInput";
 import { BookOpen } from "lucide-react";
 
 export default function ChatPanel() {
-  const { activeConversationId, messages, addMessage, updateLastMessage, setSyncStatus } = useChatStore();
+  const { user } = useUser();
+  const { getToken } = useAuth();
+
+  const {
+    activeConversationId,
+    messages,
+    addMessage,
+    updateLastMessage,
+    setSyncStatus,
+    fetchConversations,
+    fetchMessages,
+    selectConversation,
+  } = useChatStore();
+
+  const { fetchMindMap } = useMindMapStore();
+
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
@@ -17,13 +33,28 @@ export default function ChatPanel() {
   }, [activeConversationId, messages]);
   const isAssistantStreaming = activeMessages.some((msg) => msg.role === "assistant" && msg.isStreaming);
 
+  // Load conversations on mount / user change
+  useEffect(() => {
+    if (user) {
+      fetchConversations(getToken);
+    }
+  }, [user, getToken, fetchConversations]);
+
+  // Load messages and mindmap when conversation changes
+  useEffect(() => {
+    if (activeConversationId) {
+      fetchMessages(activeConversationId, getToken);
+      fetchMindMap(activeConversationId, getToken);
+    }
+  }, [activeConversationId, getToken, fetchMessages, fetchMindMap]);
+
   // Cleanup stream when user switches conversations or unmounts
   useEffect(() => {
     return () => {
       if (cleanupRef.current) {
         cleanupRef.current();
         cleanupRef.current = null;
-        
+
         // Reset streaming state in store to prevent input from being permanently disabled
         if (activeConversationId) {
           const state = useChatStore.getState();
@@ -49,8 +80,8 @@ export default function ChatPanel() {
     }
   }, [activeMessages]);
 
-  const handleSendMessage = (text: string) => {
-    if (!activeConversationId) return;
+  const handleSendMessage = async (text: string) => {
+    if (!user) return;
 
     // Clear existing stream if any
     if (cleanupRef.current) {
@@ -58,39 +89,109 @@ export default function ChatPanel() {
       cleanupRef.current = null;
     }
 
-    // 1. Add User Message
-    const userMessageId = `msg-${Date.now()}`;
-    addMessage(activeConversationId, {
-      id: userMessageId,
-      role: "user",
-      content: text,
-      timestamp: "Just now",
-    });
-
-    // 2. Set DB SyncStatus as syncing
+    const tempConvId = activeConversationId;
+    let activeId = tempConvId;
     setSyncStatus("syncing");
 
-    // 3. Add Placeholder Assistant Message
     const assistantMessageId = `msg-reply-${Date.now()}`;
-    addMessage(activeConversationId, {
-      id: assistantMessageId,
-      role: "assistant",
-      content: "",
-      timestamp: "Just now",
-      isStreaming: true,
-    });
 
-    // 4. Retrieve matching mock answer and stream
-    const matchedContent = getMockResponse(text);
-    
-    cleanupRef.current = simulateStreaming(matchedContent, (chunk, isStreaming) => {
-      updateLastMessage(activeConversationId, chunk, isStreaming);
-      if (!isStreaming) {
-        // Completed stream - mark synced
-        setSyncStatus("synced");
-        cleanupRef.current = null;
+    try {
+      const token = await getToken({ template: "supabase" });
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/chat`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            message: text,
+            conversationId: tempConvId || undefined,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(await response.text());
       }
-    });
+
+      // Check if conversation ID changed (new conversation generated on server)
+      const returnedConvId = response.headers.get("X-Conversation-Id");
+
+      if (returnedConvId && returnedConvId !== tempConvId) {
+        activeId = returnedConvId;
+        // Seed the conversation in store list
+        await fetchConversations(getToken);
+        selectConversation(activeId);
+      }
+
+      if (!activeId) {
+        throw new Error("No active conversation ID returned from server.");
+      }
+
+      // Add user message to UI state immediately
+      addMessage(activeId, {
+        id: `msg-${Date.now()}`,
+        role: "user",
+        content: text,
+        timestamp: "Just now",
+      });
+
+      // Add assistant placeholder
+      addMessage(activeId, {
+        id: assistantMessageId,
+        role: "assistant",
+        content: "",
+        timestamp: "Just now",
+        isStreaming: true,
+      });
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedText = "";
+
+      // Setup a way to abort/cleanup if conversation changes
+      let isAborted = false;
+      cleanupRef.current = () => {
+        isAborted = true;
+        try {
+          reader?.cancel();
+        } catch {}
+      };
+
+      while (true) {
+        const { done, value } = await reader!.read();
+        if (done || isAborted) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        accumulatedText += chunk;
+        updateLastMessage(activeId, accumulatedText, true);
+      }
+
+      if (!isAborted) {
+        // Finalize message stream
+        updateLastMessage(activeId, accumulatedText, false);
+        setSyncStatus("synced");
+
+        // Fetch mind map updates to sync if the map changes alongside the chat RAG
+        await fetchMindMap(activeId, getToken);
+      }
+
+      cleanupRef.current = null;
+
+    } catch (err) {
+      console.error("Chat streaming failed", err);
+      setSyncStatus("offline");
+
+      const targetId = activeId || tempConvId || "error";
+      addMessage(targetId, {
+        id: `err-${Date.now()}`,
+        role: "assistant",
+        content: "An error occurred while communicating with the medical assistant server.",
+        timestamp: "Just now",
+      });
+    }
   };
 
   return (
