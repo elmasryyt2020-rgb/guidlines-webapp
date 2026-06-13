@@ -11,19 +11,102 @@ interface ChatBubbleProps {
 export default function ChatBubble({ message }: ChatBubbleProps) {
   const isUser = message.role === "user";
 
-  // Simple parser for standard markdown structures used in our responses
-  const renderContent = (content: string) => {
+  // Simple parser for standard markdown structures used in our responses, grouping lists semantically
+  const renderContent = (content: string, isStreaming?: boolean) => {
     const lines = content.split("\n");
-    return lines.map((line, idx) => {
+    const blocks: { type: "bullet-list" | "numbered-list" | "other"; lines: string[] }[] = [];
+    
+    lines.forEach((line) => {
+      const isBullet = line.startsWith("* ") || line.startsWith("- ");
+      const isNumbered = /^\d+\.\s/.test(line);
+      const currentBlock = blocks[blocks.length - 1];
+      
+      if (isBullet) {
+        if (currentBlock && currentBlock.type === "bullet-list") {
+          currentBlock.lines.push(line);
+        } else {
+          blocks.push({ type: "bullet-list", lines: [line] });
+        }
+      } else if (isNumbered) {
+        if (currentBlock && currentBlock.type === "numbered-list") {
+          currentBlock.lines.push(line);
+        } else {
+          blocks.push({ type: "numbered-list", lines: [line] });
+        }
+      } else {
+        blocks.push({ type: "other", lines: [line] });
+      }
+    });
+
+    const cursor = isStreaming ? (
+      <span className="inline-block w-2 h-3.5 bg-black animate-pulse ml-1 align-middle" />
+    ) : null;
+
+    return blocks.map((block, blockIdx) => {
+      const isLastBlock = blockIdx === blocks.length - 1;
+
+      if (block.type === "bullet-list") {
+        return (
+          <ul key={blockIdx} className="space-y-1 mb-3">
+            {block.lines.map((line, lineIdx) => {
+              const isLastLine = isLastBlock && lineIdx === block.lines.length - 1;
+              const parts = line.substring(2).split("**");
+              return (
+                <li key={lineIdx} className="ml-4 flex items-start gap-2 text-sm font-sans font-medium pl-1 text-black/90">
+                  <span className="text-lime-brutal font-black select-none shrink-0">•</span>
+                  <span>
+                    {parts.map((part, pIdx) =>
+                      pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
+                    )}
+                    {isLastLine && cursor}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        );
+      }
+      
+      if (block.type === "numbered-list") {
+        return (
+          <ol key={blockIdx} className="space-y-1 mb-3">
+            {block.lines.map((line, lineIdx) => {
+              const isLastLine = isLastBlock && lineIdx === block.lines.length - 1;
+              const contentStr = line.replace(/^\d+\.\s/, "");
+              const parts = contentStr.split("**");
+              return (
+                <li key={lineIdx} className="ml-4 font-sans text-sm font-medium text-black/90 flex gap-1.5">
+                  <span className="font-mono font-bold text-[10px] bg-black text-white px-1 py-0.5 leading-none self-start shrink-0 border border-black shadow-[1px_1px_0px_0px_#000]">
+                    {line.match(/^\d+/)![0]}
+                  </span>
+                  <span>
+                    {parts.map((part, pIdx) =>
+                      pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
+                    )}
+                    {isLastLine && cursor}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        );
+      }
+
+      // Other block (should be single line)
+      const line = block.lines[0];
+      
       // H3 headings
       if (line.startsWith("### ")) {
         return (
           <h3
-            key={idx}
+            key={blockIdx}
             className="font-display font-black text-base uppercase tracking-tight text-black mt-4 mb-2 first:mt-0 flex items-center gap-2"
           >
             <FileText className="w-4 h-4 shrink-0 text-cyan-brutal stroke-[2.5]" />
-            {line.replace("### ", "")}
+            <span>
+              {line.replace("### ", "")}
+              {isLastBlock && cursor}
+            </span>
           </h3>
         );
       }
@@ -32,7 +115,7 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
         const isRedFlag = line.toLowerCase().includes("red flag") || line.toLowerCase().includes("critical");
         return (
           <h4
-            key={idx}
+            key={blockIdx}
             className={`font-display font-bold text-sm uppercase tracking-tight mt-3 mb-1.5 flex items-center gap-2 ${
               isRedFlag ? "text-pink-brutal" : "text-black"
             }`}
@@ -42,50 +125,32 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
             ) : (
               <CheckCircle className="w-4 h-4 shrink-0 text-lime-brutal stroke-[2.5]" />
             )}
-            {line.replace("#### ", "")}
+            <span>
+              {line.replace("#### ", "")}
+              {isLastBlock && cursor}
+            </span>
           </h4>
         );
       }
-      // Bullet lists
-      if (line.startsWith("* ") || line.startsWith("- ")) {
-        const parts = line.substring(2).split("**");
-        return (
-          <div key={idx} className="ml-4 flex items-start gap-2 text-sm font-sans font-medium mb-1 pl-1 text-black/90">
-            <span className="text-lime-brutal font-black select-none shrink-0">•</span>
-            <span>
-              {parts.map((part, pIdx) =>
-                pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
-              )}
-            </span>
-          </div>
-        );
-      }
-      // Numbered lists
-      if (/^\d+\.\s/.test(line)) {
-        const contentStr = line.replace(/^\d+\.\s/, "");
-        const parts = contentStr.split("**");
-        return (
-          <div key={idx} className="ml-4 font-sans text-sm font-medium mb-1 text-black/90 flex gap-1.5">
-            <span className="font-mono font-bold text-xs bg-black text-white px-1 py-0.5 leading-none self-start shrink-0 border border-black shadow-[1px_1px_0px_0px_#000]">
-              {line.match(/^\d+/)![0]}
-            </span>
-            <span>
-              {parts.map((part, pIdx) =>
-                pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
-              )}
-            </span>
-          </div>
-        );
-      }
       // Plain paragraphs
-      if (line.trim() === "") return <div key={idx} className="h-2" />;
+      if (line.trim() === "") {
+        if (isLastBlock && isStreaming) {
+          return (
+            <p key={blockIdx} className="text-sm font-sans font-medium leading-relaxed mb-2 text-black/90">
+              {cursor}
+            </p>
+          );
+        }
+        return <div key={blockIdx} className="h-2" />;
+      }
       
       const parts = line.split("**");
       return (
-        <p key={idx} className="text-sm font-sans font-medium leading-relaxed mb-2 text-black/90">
+        <p key={blockIdx} className="text-sm font-sans font-medium leading-relaxed mb-2 text-black/90">
           {parts.map((part, pIdx) =>
             pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
           )}
+          {isLastBlock && cursor}
         </p>
       );
     });
@@ -113,10 +178,7 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
         }`}
       >
         <div className="prose prose-sm max-w-none">
-          {renderContent(message.content)}
-          {message.isStreaming && (
-            <span className="inline-block w-2.5 h-4 bg-black animate-pulse ml-0.5 self-center" />
-          )}
+          {renderContent(message.content, message.isStreaming)}
         </div>
         <div className="mt-2 text-[9px] font-mono text-black/40 text-right">
           {message.timestamp}

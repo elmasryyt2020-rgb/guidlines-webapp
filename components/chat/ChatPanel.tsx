@@ -23,6 +23,17 @@ export default function ChatPanel() {
       if (cleanupRef.current) {
         cleanupRef.current();
         cleanupRef.current = null;
+        
+        // Reset streaming state in store to prevent input from being permanently disabled
+        if (activeConversationId) {
+          const state = useChatStore.getState();
+          const currentMsgs = state.messages[activeConversationId] || [];
+          const lastMsg = currentMsgs[currentMsgs.length - 1];
+          if (lastMsg && lastMsg.role === "assistant" && lastMsg.isStreaming) {
+            state.updateLastMessage(activeConversationId, lastMsg.content, false);
+          }
+          state.setSyncStatus("synced");
+        }
       }
     };
   }, [activeConversationId]);

@@ -38,10 +38,10 @@ export default function ChatPage() {
         </div>
 
         {/* Side-by-Side Panels Grid */}
-        <div className="flex-1 flex min-w-0 overflow-hidden">
+        <div className="flex-1 flex flex-col lg:flex-row min-w-0 overflow-hidden">
           {/* Chat Pane (Left 40% on desktop) */}
           <div
-            className={`h-full min-w-0 border-r-[3px] border-black lg:w-[40%] flex flex-col shrink-0 ${
+            className={`h-full w-full min-w-0 border-r-[3px] border-black lg:w-[40%] flex flex-col shrink-0 ${
               activePane === "chat" || activePane === "split" ? "flex" : "hidden lg:flex"
             }`}
           >
@@ -57,7 +57,7 @@ export default function ChatPage() {
             {/* Mock Mind Map Placeholder */}
             <div className="flex-1 flex flex-col h-full bg-[#E5E7EB] bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:20px_20px] p-6 justify-center items-center">
               <div className="border-brutal-thick bg-white p-8 max-w-lg shadow-brutal-lg space-y-6 text-center">
-                <div className="w-16 h-16 rounded-full border-3 border-black bg-pink-brutal flex items-center justify-center mx-auto shadow-brutal">
+                <div className="w-16 h-16 rounded-full border-[3px] border-black bg-pink-brutal flex items-center justify-center mx-auto shadow-brutal">
                   <Network className="w-8 h-8 text-black stroke-[2.5]" />
                 </div>
                 
