@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { useAuth, useUser, UserButton } from "@clerk/nextjs";
+import { useSupabaseSession } from "@/lib/useSupabaseSession";
+import UserMenu from "@/components/auth/UserMenu";
 import { useUIStore, useChatStore } from "@/lib/store";
 import {
   Plus,
@@ -13,15 +14,13 @@ import {
 } from "lucide-react";
 
 export default function Sidebar() {
-  const { user } = useUser();
-  const { userId, getToken } = useAuth();
+  const { user } = useSupabaseSession();
+  const userId = user?.id ?? null;
   const { sidebarCollapsed, toggleSidebar, activePane, setActivePane } = useUIStore();
-  const { conversations, activeConversationId, selectConversation, createNewConversation, syncStatus } = useChatStore();
+  const { conversations, draftConversation, activeConversationId, selectConversation, startDraftConversation, syncStatus } = useChatStore();
 
-  const handleNewChat = async () => {
-    if (!userId) return;
-    const title = `Consultation ${conversations.length + 1}`;
-    await createNewConversation(title, userId, getToken);
+  const handleNewChat = () => {
+    startDraftConversation();
     setActivePane("chat");
   };
 
@@ -40,9 +39,8 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`h-full bg-white border-r-[3px] border-black flex flex-col justify-between transition-all duration-300 ${
-        sidebarCollapsed ? "w-16" : "w-72"
-      }`}
+      className={`h-full bg-white border-r-[3px] border-black flex flex-col justify-between transition-all duration-300 ${sidebarCollapsed ? "w-16" : "w-72"
+        }`}
     >
       {/* Top Header */}
       <div className="flex flex-col flex-1 overflow-hidden">
@@ -60,9 +58,8 @@ export default function Sidebar() {
           )}
           <button
             onClick={toggleSidebar}
-            className={`press-effect p-1 border-2 border-black bg-white shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:bg-gray-100 ${
-              sidebarCollapsed ? "mx-auto mt-2" : ""
-            }`}
+            className={`press-effect p-1 border-2 border-black bg-white shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:bg-gray-100 ${sidebarCollapsed ? "mx-auto mt-2" : ""
+              }`}
             title={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
           >
             {sidebarCollapsed ? <Menu className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
@@ -70,11 +67,12 @@ export default function Sidebar() {
         </div>
 
         {/* Quick Action: New Chat */}
-        <div className="p-3">
+        <div className={sidebarCollapsed ? "p-2" : "p-3"}>
           <button
             onClick={handleNewChat}
             disabled={!userId}
-            className="press-effect w-full border-brutal bg-lime-brutal p-3 font-display font-extrabold uppercase text-sm shadow-brutal flex items-center justify-center gap-2 cursor-pointer disabled:opacity-55 disabled:pointer-events-none"
+            className={`press-effect w-full border-brutal bg-lime-brutal font-display font-extrabold uppercase text-sm shadow-brutal flex items-center justify-center gap-2 cursor-pointer disabled:opacity-55 disabled:pointer-events-none ${sidebarCollapsed ? "aspect-square p-0" : "p-3"
+              }`}
           >
             <Plus className="w-5 h-5 stroke-[2.5]" />
             {!sidebarCollapsed && <span>New Consult</span>}
@@ -90,7 +88,7 @@ export default function Sidebar() {
 
         {/* Scrollable Conversation List */}
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          {conversations.map((conv) => {
+          {(draftConversation ? [draftConversation, ...conversations] : conversations).map((conv) => {
             const isActive = conv.id === activeConversationId;
             return (
               <button
@@ -101,9 +99,8 @@ export default function Sidebar() {
                     setActivePane("chat");
                   }
                 }}
-                className={`w-full text-left p-3 border-2 border-black flex items-center gap-3 transition-all duration-150 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[4px_4px_0px_0px_#000] active:translate-x-0 active:translate-y-0 active:shadow-none ${
-                  isActive ? "bg-cyan-brutal" : "bg-white"
-                }`}
+                className={`w-full text-left p-3 border-2 border-black flex items-center gap-3 transition-all duration-150 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[4px_4px_0px_0px_#000] active:translate-x-0 active:translate-y-0 active:shadow-none ${isActive ? "bg-cyan-brutal" : "bg-white"
+                  }`}
               >
                 <MessageSquare className="w-4 h-4 shrink-0 stroke-[2.5]" />
                 {!sidebarCollapsed && (
@@ -126,9 +123,8 @@ export default function Sidebar() {
       <div className="border-t-[3px] border-black bg-gray-50 p-2 space-y-2">
         {/* Sync status banner */}
         <div
-          className={`border-2 border-black bg-white p-2.5 flex items-center justify-center gap-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
-            sidebarCollapsed ? "flex-col" : "flex-row justify-between"
-          }`}
+          className={`border-2 border-black bg-white p-2.5 flex items-center justify-center gap-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${sidebarCollapsed ? "flex-col" : "flex-row justify-between"
+            }`}
         >
           <div className="flex items-center gap-2 min-w-0">
             <span className={`w-3 h-3 rounded-full border border-black animate-pulse ${status.bg}`} />
@@ -145,21 +141,20 @@ export default function Sidebar() {
 
         {/* User profile card */}
         <div
-          className={`border-2 border-black bg-white p-2 flex items-center gap-3 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
-            sidebarCollapsed ? "justify-center" : "justify-between"
-          }`}
+          className={`border-2 border-black bg-white p-2 flex items-center gap-3 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${sidebarCollapsed ? "justify-center" : "justify-between"
+            }`}
         >
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="shrink-0">
-              <UserButton />
+              <UserMenu />
             </div>
             {!sidebarCollapsed && (
               <div className="min-w-0">
                 <div className="font-display font-black text-xs uppercase truncate">
-                  {user?.fullName || "Dr. CA"}
+                  {user?.user_metadata?.full_name || "Clinician"}
                 </div>
                 <div className="font-sans text-[10px] font-semibold text-black/50 truncate">
-                  {user?.primaryEmailAddress?.emailAddress || "ENT Specialist"}
+                  {user?.email || "ENT Specialist"}
                 </div>
               </div>
             )}

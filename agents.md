@@ -25,7 +25,7 @@ Use the following stack:
 
 - **Frontend Framework**: Next.js (App Router, TypeScript)
 - **Styling**: Tailwind CSS (Vanilla CSS variables for Neo-brutalist theme tokens)
-- **Authentication**: Clerk (User sign-in, session middleware, custom JWT templates for Supabase mapping)
+- **Authentication**: Supabase Auth (email/password + magic link, custom Neo-brutalist auth screens, `@supabase/ssr` cookie-based middleware route protection)
 - **Database**: Supabase PostgreSQL with `pgvector` extension
 - **AI Models (Gemini)**:
   - Chat & Generation: `gemini-2.5-flash`
@@ -60,7 +60,7 @@ Use this structure unless there is a strong reason to change it:
 app/               # Next.js App Router (pages and layouts)
   layout.tsx
   page.tsx
-  (auth)/          # Authentication routes (Clerk)
+  (auth)/          # Authentication routes (Supabase Auth custom screens)
   chat/            # Dashboard & main chat workspace
 components/        # Reusable UI components
   ui/              # Low-level layout components (cards, inputs, buttons)
@@ -124,10 +124,10 @@ For any UI-related task, refer to the UI design screenshots located in the proje
 
 ## AI & RAG Security Rules
 
-- **Never expose API secrets**: All Gemini API keys, Supabase service keys, and Clerk secret keys must remain server-side.
-- **Next.js Client**: Calls Supabase Edge Functions securely by passing the Clerk session token.
+- **Never expose API secrets**: All Gemini API keys, Supabase service keys, and Supabase JWT secrets must remain server-side.
+- **Next.js Client**: Calls Supabase Edge Functions securely by passing the Supabase session access token.
 - **Edge Functions**:
-  *   Verify user JWTs.
+  * Verify Supabase JWTs via `supabaseAdmin.auth.getUser(token)` and extract the user id.
   *   Perform vector search inside Supabase using the `match_guidelines` RPC.
   *   Call Gemini models and stream content.
 

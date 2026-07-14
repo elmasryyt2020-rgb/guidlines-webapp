@@ -1,13 +1,13 @@
 "use client";
 
 import React from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useSupabaseSession } from "@/lib/useSupabaseSession";
 import { useChatStore } from "@/lib/store";
 import { useMindMapStore } from "@/lib/mindmapStore";
 import { X, Sparkles, BookOpen, Layers } from "lucide-react";
 
 export default function RecommendationDrawer() {
-  const { getToken } = useAuth();
+  const { getToken } = useSupabaseSession();
   const { activeConversationId } = useChatStore();
   const { selectedNode, drawerOpen, closeDrawer, brainstormOnNode } = useMindMapStore();
 

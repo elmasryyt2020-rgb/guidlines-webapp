@@ -1,9 +1,9 @@
 "use client";
 
 import { create } from "zustand";
-import { getSupabaseClient } from "./supabaseClient";
+import { getSupabaseClient, checkSupabaseConnectivity } from "./supabaseClient";
 
-export type GetToken = (options: { template: string }) => Promise<string | null>;
+export type GetToken = (options?: { template?: string }) => Promise<string | null>;
 
 export interface Conversation {
   id: string;
@@ -40,18 +40,25 @@ interface UIState {
   setActivePane: (pane: "chat" | "mindmap" | "split") => void;
 }
 
+// Local-only draft id. Never written to the DB; the chat edge function creates
+// the real conversation row on the first message.
+export const DRAFT_CONVERSATION_ID = "draft";
+
 interface ChatState {
   conversations: Conversation[];
   activeConversationId: string | null;
   messages: Record<string, Message[]>;
+  draftConversation: Conversation | null;
   syncStatus: "synced" | "syncing" | "offline";
   
+  checkDBConnection: () => Promise<void>;
   fetchConversations: (getToken: GetToken) => Promise<void>;
   fetchMessages: (conversationId: string, getToken: GetToken) => Promise<void>;
   selectConversation: (id: string) => void;
+  startDraftConversation: () => void;
+  clearDraft: () => void;
   addMessage: (conversationId: string, message: Message) => void;
   updateLastMessage: (conversationId: string, content: string, isStreaming: boolean) => void;
-  createNewConversation: (title: string, userId: string, getToken: GetToken) => Promise<string>;
   setSyncStatus: (status: "synced" | "syncing" | "offline") => void;
 }
 
@@ -67,7 +74,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   activeConversationId: null,
   messages: {},
-  syncStatus: "synced",
+  draftConversation: null,
+  syncStatus: "syncing",
+
+  checkDBConnection: async () => {
+    set({ syncStatus: "syncing" });
+    const isReachable = await checkSupabaseConnectivity();
+    set({ syncStatus: isReachable ? "synced" : "offline" });
+  },
 
   fetchConversations: async (getToken) => {
     set({ syncStatus: "syncing" });
@@ -127,7 +141,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  selectConversation: (id) => set({ activeConversationId: id }),
+  selectConversation: (id) =>
+    set((state) => ({
+      activeConversationId: id,
+      // Selecting another conversation abandons the unsaved local draft.
+      draftConversation: state.draftConversation && state.draftConversation.id !== id
+        ? null
+        : state.draftConversation,
+    })),
+
+  startDraftConversation: () => {
+    const state = get();
+    // Reuse an existing empty draft instead of creating a duplicate.
+    if (state.draftConversation) {
+      set({ activeConversationId: state.draftConversation.id });
+      return;
+    }
+    // Reuse an already-active real conversation that has no messages yet.
+    const activeId = state.activeConversationId;
+    if (activeId && activeId !== DRAFT_CONVERSATION_ID && (state.messages[activeId] || []).length === 0) {
+      return;
+    }
+    const draft: Conversation = {
+      id: DRAFT_CONVERSATION_ID,
+      title: "New Consultation",
+      updatedAt: "Just now",
+    };
+    set((s) => ({
+      draftConversation: draft,
+      activeConversationId: DRAFT_CONVERSATION_ID,
+      messages: { ...s.messages, [DRAFT_CONVERSATION_ID]: [] },
+    }));
+  },
+
+  clearDraft: () => set({ draftConversation: null }),
   
   addMessage: (conversationId, message) =>
     set((state) => {
@@ -157,47 +204,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
       };
     }),
-
-  createNewConversation: async (title, userId, getToken) => {
-    set({ syncStatus: "syncing" });
-    const supabase = await getSupabaseClient(getToken);
-    const { data, error } = await supabase
-      .from("conversations")
-      .insert({ title, user_id: userId })
-      .select()
-      .single();
-
-    if (error || !data) {
-      throw new Error(error?.message || "Failed to create conversation");
-    }
-
-    // Seed mind map
-    const { error: mapError } = await supabase
-      .from("mind_maps")
-      .insert({ conversation_id: data.id, nodes: [], edges: [] });
-
-    if (mapError) {
-      throw new Error(mapError.message || "Failed to seed mind map");
-    }
-
-    const newConv: Conversation = {
-      id: data.id,
-      title: data.title,
-      updatedAt: "Just now",
-    };
-
-    set((state) => ({
-      conversations: [newConv, ...state.conversations],
-      activeConversationId: data.id,
-      messages: {
-        ...state.messages,
-        [data.id]: [],
-      },
-      syncStatus: "synced",
-    }));
-
-    return data.id;
-  },
 
   setSyncStatus: (status) => set({ syncStatus: status }),
 }));

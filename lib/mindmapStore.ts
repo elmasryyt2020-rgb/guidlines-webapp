@@ -44,6 +44,7 @@ export interface MindMapState {
   regenerateMap: (conversationId: string, getToken: GetToken) => Promise<void>;
   clearMap: (conversationId: string, getToken: GetToken) => Promise<void>;
   saveLayout: (conversationId: string, getToken: GetToken) => Promise<void>;
+  resetLocalMindMap: () => void;
   clearToast: () => void;
 }
 
@@ -97,7 +98,7 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
   brainstormOnNode: async (conversationId, nodeId, getToken) => {
     set({ toastMessage: "Brainstorming new pathways..." });
     try {
-      const token = await getToken({ template: "supabase" });
+      const token = await getToken();
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/brainstorm`,
         {
@@ -134,7 +135,7 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
   regenerateMap: async (conversationId, getToken) => {
     set({ toastMessage: "Regenerating mind map..." });
     try {
-      const token = await getToken({ template: "supabase" });
+      const token = await getToken();
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/brainstorm`,
         {
@@ -197,6 +198,8 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
       set({ toastMessage: "Failed to save positions." });
     }
   },
+
+  resetLocalMindMap: () => set({ nodes: [], edges: [], selectedNode: null, drawerOpen: false }),
 
   clearToast: () => set({ toastMessage: null })
 }));

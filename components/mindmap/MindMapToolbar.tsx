@@ -1,13 +1,13 @@
 "use client";
 
 import React from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useSupabaseSession } from "@/lib/useSupabaseSession";
 import { useChatStore } from "@/lib/store";
 import { useMindMapStore } from "@/lib/mindmapStore";
 import { RefreshCw, Trash2, Save } from "lucide-react";
 
 export default function MindMapToolbar() {
-  const { getToken } = useAuth();
+  const { getToken } = useSupabaseSession();
   const { activeConversationId } = useChatStore();
   const { regenerateMap, clearMap, saveLayout } = useMindMapStore();
 

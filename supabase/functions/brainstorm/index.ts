@@ -1,6 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
-import * as jose from "https://esm.sh/jose@5.2.4";
 
 interface GuidelineChunk {
   file_name: string;
@@ -41,29 +40,6 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Global JWKS Cache
-let cachedJWKS: ReturnType<typeof jose.createRemoteJWKSet> | null = null;
-
-function getJWKS(jwksUrl: string) {
-  if (!cachedJWKS) {
-    cachedJWKS = jose.createRemoteJWKSet(new URL(jwksUrl));
-  }
-  return cachedJWKS;
-}
-
-function getClerkJwksUrl(publishableKey: string) {
-  try {
-    const parts = publishableKey.split("_");
-    if (parts.length < 3) throw new Error("Invalid Clerk Publishable Key format");
-    const base64Part = parts[2];
-    const decoded = atob(base64Part);
-    const domain = decoded.replace("$", "");
-    return `https://${domain}/.well-known/jwks.json`;
-  } catch (err) {
-    throw new Error(`Failed to parse Clerk Publishable Key: ${err.message}`);
-  }
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -79,31 +55,20 @@ serve(async (req) => {
     }
 
     const token = authHeader.split(" ")[1];
-    const clerkPubKey = Deno.env.get("CLERK_PUBLISHABLE_KEY");
-    if (!clerkPubKey) {
-      throw new Error("Missing CLERK_PUBLISHABLE_KEY secret in Deno env");
-    }
 
-    const jwksUrl = getClerkJwksUrl(clerkPubKey);
-    const JWKS = getJWKS(jwksUrl);
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
-    let verified;
-    try {
-      verified = await jose.jwtVerify(token, JWKS);
-    } catch (err) {
-      return new Response(JSON.stringify({ error: `Unauthorized token: ${err.message}` }), {
+    // Verify the Supabase access token and extract the user id
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    if (authError || !user) {
+      return new Response(JSON.stringify({ error: "Unauthorized token" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    const userId = verified.payload.sub;
-    if (!userId) {
-      return new Response(JSON.stringify({ error: "Invalid token claims" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    const userId = user.id;
 
     const body = await req.json();
     const { conversationId, nodeId } = body;
@@ -113,10 +78,6 @@ serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
     // Fetch conversation details to verify user owns it (Security check for BOLA / IDOR)
     const { data: convData } = await supabaseAdmin
@@ -184,12 +145,12 @@ serve(async (req) => {
     if (searchQuery) {
       // Get embedding
       const embedResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-04:embedContent?key=${geminiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${geminiKey}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "models/text-embedding-04",
+            model: "models/text-embedding-004",
             content: { parts: [{ text: searchQuery }] },
           }),
         }
@@ -223,15 +184,22 @@ CRITICAL RULES:
    - Diagnostic bedside/laboratory/imaging tests go in column 3 (x: 590)
    - Treatment plans go in column 4 (x: 860)
    - Stagger vertical coordinates (y) by increments of 150 (e.g. y: 50, 200, 350) based on node index to prevent overlaps.
-4. Edge formatting:
-   - Connections must link from parent nodes to child nodes.
+4. Edge rules — THESE ARE MANDATORY:
+   - Every node EXCEPT the first symptomNode MUST appear as the "target" of at least one edge.
+   - Every edge "source" and "target" MUST exactly match an id in the nodes array.
+   - Flow is strictly: symptomNode -> diagnosisNode -> testNode -> treatmentNode.
+   - Each diagnosisNode must connect from a symptomNode.
+   - Each testNode must connect from a diagnosisNode.
+   - Each treatmentNode must connect from a testNode.
+   - NEVER leave a node with zero incoming edges (except the root symptomNode).
    - Set strokeWidth to 3 and stroke to "#000" in style.
+5. Before finalizing your JSON, verify: count your nodes, count your edges, ensure every non-root node has an incoming edge.
 
 JSON Output Schema:
 {
   "nodes": [
     {
-      "id": "string (unique identifier)",
+      "id": "string (unique snake_case identifier, e.g. symptom_1, diagnosis_1)",
       "type": "symptomNode" | "diagnosisNode" | "testNode" | "treatmentNode",
       "position": { "x": number, "y": number },
       "data": {
@@ -251,8 +219,8 @@ JSON Output Schema:
   "edges": [
     {
       "id": "e-[source]-[target]",
-      "source": "string (parent node id)",
-      "target": "string (child node id)",
+      "source": "string (must match a node id exactly)",
+      "target": "string (must match a node id exactly)",
       "style": { "strokeWidth": 3, "stroke": "#000" }
     }
   ]
@@ -304,12 +272,10 @@ ${guidelinesText}
     let finalNodes: MindMapNode[] = [];
     let finalEdges: MindMapEdge[] = [];
 
-    // If nodeId is provided, we merge these brainstormed nodes into the existing map to preserve historical data
+    // If nodeId is provided, merge brainstormed nodes into the existing map
     if (nodeId) {
-      // Filter out duplicate node IDs
       const existingIds = new Set(currentNodes.map((n) => n.id));
       const filteredNewNodes = newNodes.filter((n) => !existingIds.has(n.id));
-      
       finalNodes = [...currentNodes, ...filteredNewNodes];
       finalEdges = [...currentEdges, ...newEdges];
     } else {
@@ -318,18 +284,92 @@ ${guidelinesText}
       finalEdges = newEdges;
     }
 
-    // Save back to db
-    const { error: upsertError } = await supabaseAdmin
-      .from("mind_maps")
-      .upsert({
-        conversation_id: conversationId,
-        nodes: finalNodes,
-        edges: finalEdges,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "conversation_id" });
+    // ---------------------------------------------------------------
+    // Post-process: heal graph integrity
+    // ---------------------------------------------------------------
+    // 1. Strip edges whose source or target don't exist in finalNodes
+    const nodeIdSet = new Set(finalNodes.map((n) => n.id));
+    finalEdges = finalEdges.filter(
+      (e) => nodeIdSet.has(e.source) && nodeIdSet.has(e.target)
+    );
 
-    if (upsertError) {
-      throw new Error(`Failed to save brainstormed mindmap: ${upsertError.message}`);
+    // 2. Deduplicate edges by source→target pair
+    const edgeKeySet = new Set<string>();
+    finalEdges = finalEdges.filter((e) => {
+      const key = `${e.source}->${e.target}`;
+      if (edgeKeySet.has(key)) return false;
+      edgeKeySet.add(key);
+      return true;
+    });
+
+    // 3. Find orphaned nodes (non-root nodes with no incoming edge) and auto-connect
+    const typeOrder: Record<string, number> = {
+      symptomNode: 0,
+      diagnosisNode: 1,
+      testNode: 2,
+      treatmentNode: 3,
+    };
+    const nodesWithIncoming = new Set(finalEdges.map((e) => e.target));
+    const rootCandidates = finalNodes.filter((n) => n.type === "symptomNode");
+
+    for (const node of finalNodes) {
+      if (nodesWithIncoming.has(node.id)) continue;  // already connected
+      const nodeRank = typeOrder[node.type] ?? 0;
+      if (nodeRank === 0) continue;  // root symptom nodes don't need incoming edges
+
+      // Find the best parent: a node with rank === nodeRank - 1
+      const expectedParentType = Object.keys(typeOrder).find(
+        (t) => typeOrder[t] === nodeRank - 1
+      );
+      const candidates = finalNodes.filter(
+        (n) => n.id !== node.id && n.type === expectedParentType
+      );
+      const parent = candidates.length > 0 ? candidates[0] : rootCandidates[0];
+
+      if (parent) {
+        const healedEdge: MindMapEdge = {
+          id: `e-${parent.id}-${node.id}`,
+          source: parent.id,
+          target: node.id,
+          style: { strokeWidth: 3, stroke: "#000" },
+        };
+        finalEdges.push(healedEdge);
+        nodesWithIncoming.add(node.id);
+      }
+    }
+
+    // Save back to db — use a manual check-then-insert/update to avoid
+    // relying on ON CONFLICT (which requires a UNIQUE constraint).
+    const { data: existingRecord } = await supabaseAdmin
+      .from("mind_maps")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .maybeSingle();
+
+    let saveError;
+    if (existingRecord?.id) {
+      const { error } = await supabaseAdmin
+        .from("mind_maps")
+        .update({
+          nodes: finalNodes,
+          edges: finalEdges,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existingRecord.id);
+      saveError = error;
+    } else {
+      const { error } = await supabaseAdmin
+        .from("mind_maps")
+        .insert({
+          conversation_id: conversationId,
+          nodes: finalNodes,
+          edges: finalEdges,
+        });
+      saveError = error;
+    }
+
+    if (saveError) {
+      throw new Error(`Failed to save brainstormed mindmap: ${saveError.message}`);
     }
 
     return new Response(JSON.stringify({ nodes: finalNodes, edges: finalEdges }), {

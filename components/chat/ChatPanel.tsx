@@ -1,16 +1,16 @@
 "use client";
 
 import React, { useRef, useEffect, useMemo } from "react";
-import { useChatStore } from "@/lib/store";
+import { useChatStore, DRAFT_CONVERSATION_ID } from "@/lib/store";
 import { useMindMapStore } from "@/lib/mindmapStore";
-import { useAuth, useUser } from "@clerk/nextjs";
+import { useSupabaseSession } from "@/lib/useSupabaseSession";
 import ChatBubble from "./ChatBubble";
 import ChatInput from "./ChatInput";
 import { BookOpen } from "lucide-react";
 
 export default function ChatPanel() {
-  const { user } = useUser();
-  const { getToken } = useAuth();
+  const { user } = useSupabaseSession();
+  const { getToken } = useSupabaseSession();
 
   const {
     activeConversationId,
@@ -21,9 +21,11 @@ export default function ChatPanel() {
     fetchConversations,
     fetchMessages,
     selectConversation,
+    clearDraft,
+    checkDBConnection,
   } = useChatStore();
 
-  const { fetchMindMap } = useMindMapStore();
+  const { fetchMindMap, resetLocalMindMap } = useMindMapStore();
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -32,6 +34,12 @@ export default function ChatPanel() {
     return activeConversationId ? messages[activeConversationId] || [] : [];
   }, [activeConversationId, messages]);
   const isAssistantStreaming = activeMessages.some((msg) => msg.role === "assistant" && msg.isStreaming);
+
+  // Probe DB reachability immediately on mount (auth-independent)
+  useEffect(() => {
+    checkDBConnection();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load conversations on mount / user change
   useEffect(() => {
@@ -42,11 +50,15 @@ export default function ChatPanel() {
 
   // Load messages and mindmap when conversation changes
   useEffect(() => {
-    if (activeConversationId) {
-      fetchMessages(activeConversationId, getToken);
-      fetchMindMap(activeConversationId, getToken);
+    if (!activeConversationId) return;
+    if (activeConversationId === DRAFT_CONVERSATION_ID) {
+      // Draft is local-only: blank the canvas, no DB fetch.
+      resetLocalMindMap();
+      return;
     }
-  }, [activeConversationId, getToken, fetchMessages, fetchMindMap]);
+    fetchMessages(activeConversationId, getToken);
+    fetchMindMap(activeConversationId, getToken);
+  }, [activeConversationId, getToken, fetchMessages, fetchMindMap, resetLocalMindMap]);
 
   // Cleanup stream when user switches conversations or unmounts
   useEffect(() => {
@@ -90,13 +102,14 @@ export default function ChatPanel() {
     }
 
     const tempConvId = activeConversationId;
+    const isDraft = tempConvId === DRAFT_CONVERSATION_ID;
     let activeId = tempConvId;
     setSyncStatus("syncing");
 
     const assistantMessageId = `msg-reply-${Date.now()}`;
 
     try {
-      const token = await getToken({ template: "supabase" });
+      const token = await getToken();
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/chat`,
         {
@@ -107,7 +120,8 @@ export default function ChatPanel() {
           },
           body: JSON.stringify({
             message: text,
-            conversationId: tempConvId || undefined,
+            // Drafts have no DB row yet; the server creates one on first message.
+            conversationId: isDraft ? undefined : tempConvId || undefined,
           }),
         }
       );
@@ -121,7 +135,8 @@ export default function ChatPanel() {
 
       if (returnedConvId && returnedConvId !== tempConvId) {
         activeId = returnedConvId;
-        // Seed the conversation in store list
+        // The draft became a real conversation: clear it and re-fetch from DB.
+        if (isDraft) clearDraft();
         await fetchConversations(getToken);
         selectConversation(activeId);
       }
@@ -201,11 +216,11 @@ export default function ChatPanel() {
         <div className="flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-black stroke-[2.5]" />
           <span className="font-display font-black text-sm uppercase tracking-tight">
-            Clinical Guidelines RAG Chat
+            Clinical Guidelines Assistant
           </span>
         </div>
         <span className="font-mono text-[10px] font-extrabold uppercase bg-black text-white px-2 py-0.5 border border-black shadow-[1.5px_1.5px_0px_0px_#000]">
-          MOH v2.5
+          MOH
         </span>
       </div>
 

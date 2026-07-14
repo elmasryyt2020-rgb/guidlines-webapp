@@ -1,6 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
-import * as jose from "https://esm.sh/jose@5.2.4";
 
 interface GuidelineChunk {
   file_name: string;
@@ -18,30 +17,6 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Global JWKS Cache
-let cachedJWKS: ReturnType<typeof jose.createRemoteJWKSet> | null = null;
-
-function getJWKS(jwksUrl: string) {
-  if (!cachedJWKS) {
-    cachedJWKS = jose.createRemoteJWKSet(new URL(jwksUrl));
-  }
-  return cachedJWKS;
-}
-
-// Helper: base64 decode to extract Clerk Jwks url from Publishable Key
-function getClerkJwksUrl(publishableKey: string) {
-  try {
-    const parts = publishableKey.split("_");
-    if (parts.length < 3) throw new Error("Invalid Clerk Publishable Key format");
-    const base64Part = parts[2];
-    const decoded = atob(base64Part);
-    const domain = decoded.replace("$", "");
-    return `https://${domain}/.well-known/jwks.json`;
-  } catch (err) {
-    throw new Error(`Failed to parse Clerk Publishable Key: ${err.message}`);
-  }
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -58,32 +33,27 @@ serve(async (req) => {
 
     const token = authHeader.split(" ")[1];
 
-    // Verify JWT using Clerk JWKS
-    const clerkPubKey = Deno.env.get("CLERK_PUBLISHABLE_KEY");
-    if (!clerkPubKey) {
-      throw new Error("Missing CLERK_PUBLISHABLE_KEY secret in Deno env");
-    }
+    // Validate all required secrets before any external calls
+    const geminiKey = Deno.env.get("GEMINI_API_KEY");
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-    const jwksUrl = getClerkJwksUrl(clerkPubKey);
-    const JWKS = getJWKS(jwksUrl);
-    
-    let verified;
-    try {
-      verified = await jose.jwtVerify(token, JWKS);
-    } catch (err) {
-      return new Response(JSON.stringify({ error: `Unauthorized token: ${err.message}` }), {
+    if (!geminiKey) throw new Error("MISSING_SECRET: GEMINI_API_KEY is not set in Supabase Edge Function secrets.");
+    if (!supabaseUrl) throw new Error("MISSING_SECRET: SUPABASE_URL is not set in Supabase Edge Function secrets.");
+    if (!supabaseServiceKey) throw new Error("MISSING_SECRET: SUPABASE_SERVICE_ROLE_KEY is not set in Supabase Edge Function secrets.");
+
+    // Initialize Supabase Admin Client
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Verify the Supabase access token and extract the user id
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    if (authError || !user) {
+      return new Response(JSON.stringify({ error: "Unauthorized token" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    const userId = verified.payload.sub;
-    if (!userId) {
-      return new Response(JSON.stringify({ error: "Invalid token claims" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    const userId = user.id;
 
     const body = await req.json();
     const { message, conversationId } = body;
@@ -93,11 +63,6 @@ serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    // Initialize Supabase Admin Client
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
     let activeConvId = conversationId;
 
@@ -148,24 +113,26 @@ serve(async (req) => {
     }
 
     // 2. Fetch Embeddings for User Message
-    const geminiKey = Deno.env.get("GEMINI_API_KEY")!;
-    const embedResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-04:embedContent?key=${geminiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "models/text-embedding-04",
-          content: { parts: [{ text: message }] },
-        }),
-      }
-    );
+    // Uses gemini-embedding-2 with 768 output dimensions to match the ingestion pipeline
+    const embedUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key=${geminiKey}`;
+    const embedResponse = await fetch(embedUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "models/gemini-embedding-2",
+        content: { parts: [{ text: message }] },
+        outputDimensionality: 768,
+      }),
+    });
 
     if (!embedResponse.ok) {
       throw new Error(`Failed to generate embeddings: ${await embedResponse.text()}`);
     }
     const embedData = await embedResponse.json();
-    const embedding = embedData.embedding.values;
+    const embedding: number[] = embedData.embedding?.values ?? [];
+    if (embedding.length === 0) {
+      throw new Error("Embedding returned empty values. Check model access for this API key.");
+    }
 
     // 3. Perform match_guidelines Vector Search
     const { data: contextChunks, error: rpcError } = await supabaseAdmin.rpc(
@@ -181,7 +148,7 @@ serve(async (req) => {
       console.error(`Vector search error: ${rpcError.message}`);
     }
 
-    const guidelinesContext = ((contextChunks || []) as GuidelineChunk[])
+    const guidelinesContext = ((contextChunks || []) as GuidelineChunk[]
       .map((c) => `[Document: ${c.file_name}]\n${c.content}`)
       .join("\n\n---\n\n");
 
