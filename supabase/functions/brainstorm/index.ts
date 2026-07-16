@@ -1,6 +1,17 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
 
+function decodeJwtClaims(token: string): { kid?: string; iss?: string; sub?: string } | null {
+  try {
+    const [headerB64, payloadB64] = token.split(".");
+    const header = JSON.parse(atob(headerB64));
+    const payload = JSON.parse(atob(payloadB64));
+    return { kid: header.kid, iss: payload.iss, sub: payload.sub };
+  } catch {
+    return null;
+  }
+}
+
 interface GuidelineChunk {
   file_name: string;
   content: string;
@@ -56,17 +67,31 @@ serve(async (req) => {
 
     const token = authHeader.split(" ")[1];
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!supabaseUrl || !supabaseServiceKey) {
+      throw new Error("MISSING_SECRET: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set in Edge Function secrets.");
+    }
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
     // Verify the Supabase access token and extract the user id
+    const tokenClaims = decodeJwtClaims(token);
+    console.log(
+      `[brainstorm] Auth attempt. Configured SUPABASE_URL: ${supabaseUrl}, token issuer: ${tokenClaims?.iss ?? "unknown"}, kid: ${tokenClaims?.kid ?? "unknown"}`
+    );
+
     const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
     if (authError || !user) {
-      return new Response(JSON.stringify({ error: "Unauthorized token" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      const detail = authError?.message ?? "Invalid or expired token";
+      return new Response(
+        JSON.stringify({
+          error: `Unauthorized token: ${detail}. Ensure the Edge Function's SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY secrets belong to the same project that issued this token (issuer: ${tokenClaims?.iss ?? "unknown"}).`,
+        }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
     const userId = user.id;
 
@@ -173,39 +198,46 @@ serve(async (req) => {
     const systemInstruction = `You are a clinical decision mindmap planner helping doctors map out clinical pathways.
 Analyze the provided chat history and the current mindmap structure. Your task is to generate diagnostic, differential, test, or treatment steps based on the clinical guidelines context.
 
-${nodeId ? `The user is specifically brainstorming starting from the node: "${nodeId}". Generate 1 to 3 new child nodes branching off of this parent node. Ensure their ids start with "brainstorm-".` : `Generate a cohesive diagnosis-action tree containing 4 to 8 nodes matching the session topic.`}
+${nodeId ? `The user is specifically brainstorming starting from the node: "${nodeId}". Generate 1 to 3 new child nodes branching off of this parent node. Ensure their ids start with "brainstorm-".` : `Generate a clinical decision TREE with 6 to 12 nodes matching the session topic.`}
 
-CRITICAL RULES:
-1. You must output ONLY a valid raw JSON object. Do not wrap in markdown \`\`\`json blocks.
-2. STRICTLY NO EMOJIS in any labels, descriptions, or recommendations.
-3. Node position rules:
+CRITICAL STRUCTURE RULES — THIS IS A TREE, NOT A WEB:
+1. The output is a STRICT TREE. Every non-root node has EXACTLY ONE parent. NO cross-links between siblings or cousins. NO node may have two incoming edges.
+2. Flow direction: symptomNode -> diagnosisNode -> testNode -> treatmentNode.
+   - ONE root symptomNode (the presenting complaint).
+   - Multiple diagnosisNodes branch FROM the root symptomNode (differential diagnoses).
+   - Each diagnosisNode has its OWN testNodes (diagnostic workup for that specific diagnosis).
+   - Each testNode has its OWN treatmentNodes (treatment if that test confirms the diagnosis).
+3. NEVER connect a node to a sibling. NEVER connect across branches. Each branch is independent.
+   Example of CORRECT tree:
+     symptom_1 -> diagnosis_1 -> test_1a -> treatment_1a
+                               -> test_1b -> treatment_1b
+                -> diagnosis_2 -> test_2a -> treatment_2a
+   Example of WRONG graph (DO NOT DO THIS):
+     diagnosis_1 -> test_2a (cross-link between branches)
+     test_1a -> diagnosis_2 (backward link)
+     treatment_1a -> test_1a (cycle)
+4. Each edge connects a parent to its direct child. Source type must be exactly one rank above target type:
+   symptomNode(rank 0) -> diagnosisNode(rank 1) -> testNode(rank 2) -> treatmentNode(rank 3).
+5. STRICTLY NO EMOJIS in any labels, descriptions, or recommendations.
+6. Node position rules:
    - Symptoms go in column 1 (x: 50)
-   - Differential Diagnoses go in column 2 (x: 320)
-   - Diagnostic bedside/laboratory/imaging tests go in column 3 (x: 590)
-   - Treatment plans go in column 4 (x: 860)
-   - Stagger vertical coordinates (y) by increments of 150 (e.g. y: 50, 200, 350) based on node index to prevent overlaps.
-4. Edge rules — THESE ARE MANDATORY:
-   - Every node EXCEPT the first symptomNode MUST appear as the "target" of at least one edge.
-   - Every edge "source" and "target" MUST exactly match an id in the nodes array.
-   - Flow is strictly: symptomNode -> diagnosisNode -> testNode -> treatmentNode.
-   - Each diagnosisNode must connect from a symptomNode.
-   - Each testNode must connect from a diagnosisNode.
-   - Each treatmentNode must connect from a testNode.
-   - NEVER leave a node with zero incoming edges (except the root symptomNode).
-   - Set strokeWidth to 3 and stroke to "#000" in style.
-5. Before finalizing your JSON, verify: count your nodes, count your edges, ensure every non-root node has an incoming edge.
+   - Differential Diagnoses go in column 2 (x: 350)
+   - Diagnostic tests go in column 3 (x: 650)
+   - Treatment plans go in column 4 (x: 950)
+   - Space nodes vertically by 180px per node within each column. Nodes under the same parent should be grouped vertically.
+7. Self-check before output: count edges. It MUST equal (number of nodes - 1). If not, you have cross-links — remove them.
 
 JSON Output Schema:
 {
   "nodes": [
     {
-      "id": "string (unique snake_case identifier, e.g. symptom_1, diagnosis_1)",
+      "id": "string (unique snake_case, e.g. symptom_1, diagnosis_1, test_2a)",
       "type": "symptomNode" | "diagnosisNode" | "testNode" | "treatmentNode",
       "position": { "x": number, "y": number },
       "data": {
         "label": "string (short clinical label)",
-        "description": "string (short details, max 1 sentence)",
-        "recommendations": ["string (action item 1)", "string (action item 2)"],
+        "description": "string (max 1 sentence)",
+        "recommendations": ["string"],
         "citations": [
           {
             "document": "string (Egyptian MOH Guideline doc name)",
@@ -237,8 +269,8 @@ OFFICIAL CLINICAL GUIDELINES CONTEXT:
 ${guidelinesText}
 `;
 
-    // Call Gemini 2.5 Flash
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+    // Call Gemini 3.5 Flash
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${geminiKey}`;
     const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -285,15 +317,35 @@ ${guidelinesText}
     }
 
     // ---------------------------------------------------------------
-    // Post-process: heal graph integrity
+    // Post-process: enforce strict tree structure
     // ---------------------------------------------------------------
-    // 1. Strip edges whose source or target don't exist in finalNodes
-    const nodeIdSet = new Set(finalNodes.map((n) => n.id));
-    finalEdges = finalEdges.filter(
-      (e) => nodeIdSet.has(e.source) && nodeIdSet.has(e.target)
-    );
+    const typeOrder: Record<string, number> = {
+      symptomNode: 0,
+      diagnosisNode: 1,
+      testNode: 2,
+      treatmentNode: 3,
+    };
 
-    // 2. Deduplicate edges by source→target pair
+    // 1. Strip edges with missing endpoints or wrong rank direction
+    const nodeIdSet = new Set(finalNodes.map((n) => n.id));
+    const nodeById = new Map(finalNodes.map((n) => [n.id, n]));
+    finalEdges = finalEdges.filter((e) => {
+      if (!nodeIdSet.has(e.source) || !nodeIdSet.has(e.target)) return false;
+      // Only allow edges where source rank is exactly one less than target rank
+      const srcRank = typeOrder[nodeById.get(e.source)!.type] ?? -1;
+      const tgtRank = typeOrder[nodeById.get(e.target)!.type] ?? -1;
+      return tgtRank === srcRank + 1;
+    });
+
+    // 2. Enforce single-parent: keep only the first edge into each target (tree, not DAG)
+    const seenTargets = new Set<string>();
+    finalEdges = finalEdges.filter((e) => {
+      if (seenTargets.has(e.target)) return false;
+      seenTargets.add(e.target);
+      return true;
+    });
+
+    // 3. Deduplicate by source→target key
     const edgeKeySet = new Set<string>();
     finalEdges = finalEdges.filter((e) => {
       const key = `${e.source}->${e.target}`;
@@ -302,22 +354,15 @@ ${guidelinesText}
       return true;
     });
 
-    // 3. Find orphaned nodes (non-root nodes with no incoming edge) and auto-connect
-    const typeOrder: Record<string, number> = {
-      symptomNode: 0,
-      diagnosisNode: 1,
-      testNode: 2,
-      treatmentNode: 3,
-    };
+    // 4. Heal orphaned nodes (non-root nodes with no incoming edge)
     const nodesWithIncoming = new Set(finalEdges.map((e) => e.target));
     const rootCandidates = finalNodes.filter((n) => n.type === "symptomNode");
 
     for (const node of finalNodes) {
-      if (nodesWithIncoming.has(node.id)) continue;  // already connected
+      if (nodesWithIncoming.has(node.id)) continue;
       const nodeRank = typeOrder[node.type] ?? 0;
-      if (nodeRank === 0) continue;  // root symptom nodes don't need incoming edges
+      if (nodeRank === 0) continue; // root symptom nodes don't need incoming edges
 
-      // Find the best parent: a node with rank === nodeRank - 1
       const expectedParentType = Object.keys(typeOrder).find(
         (t) => typeOrder[t] === nodeRank - 1
       );
@@ -327,14 +372,49 @@ ${guidelinesText}
       const parent = candidates.length > 0 ? candidates[0] : rootCandidates[0];
 
       if (parent) {
-        const healedEdge: MindMapEdge = {
+        finalEdges.push({
           id: `e-${parent.id}-${node.id}`,
           source: parent.id,
           target: node.id,
           style: { strokeWidth: 3, stroke: "#000" },
-        };
-        finalEdges.push(healedEdge);
+        });
         nodesWithIncoming.add(node.id);
+      }
+    }
+
+    // 5. Re-layout positions to prevent overlaps — group children under their parent
+    // Build parent→children map from the enforced tree edges
+    const childrenOf: Record<string, string[]> = {};
+    for (const e of finalEdges) {
+      if (!childrenOf[e.source]) childrenOf[e.source] = [];
+      childrenOf[e.source].push(e.target);
+    }
+    const columnX: Record<number, number> = { 0: 50, 1: 350, 2: 650, 3: 950 };
+    let globalY = 50;
+    // DFS layout: walk tree from roots, assign y sequentially so children group under parent
+    const positioned = new Set<string>();
+    function layoutSubtree(nodeId: string) {
+      const node = nodeById.get(nodeId);
+      if (!node || positioned.has(nodeId)) return;
+      positioned.add(nodeId);
+      const rank = typeOrder[node.type] ?? 0;
+      node.position = { x: columnX[rank] ?? rank * 300, y: globalY };
+      globalY += 180;
+      for (const childId of childrenOf[nodeId] || []) {
+        layoutSubtree(childId);
+      }
+    }
+    // Start from root symptom nodes
+    for (const root of rootCandidates) {
+      layoutSubtree(root.id);
+    }
+    // Position any remaining unvisited nodes (shouldn't happen, but safety)
+    for (const node of finalNodes) {
+      if (!positioned.has(node.id)) {
+        const rank = typeOrder[node.type] ?? 0;
+        node.position = { x: columnX[rank] ?? rank * 300, y: globalY };
+        globalY += 180;
+        positioned.add(node.id);
       }
     }
 

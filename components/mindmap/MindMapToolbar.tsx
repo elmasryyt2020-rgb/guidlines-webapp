@@ -30,7 +30,7 @@ export default function MindMapToolbar() {
   };
 
   return (
-    <div className="w-full bg-white border-b-[3px] border-black p-3 flex justify-between items-center shrink-0">
+    <div className="w-full bg-white border-b-[3px] border-black px-4 h-[73px] flex justify-between items-center shrink-0">
       <div className="flex items-center gap-2">
         <div className="w-3 h-3 bg-red-500 border-2 border-black rounded-none"></div>
         <span className="font-display font-black text-xs uppercase tracking-wider text-black">

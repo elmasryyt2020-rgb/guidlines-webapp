@@ -35,8 +35,8 @@ export default function ChatInput({ onSendMessage, disabled }: ChatInputProps) {
   }, [input]);
 
   return (
-    <form onSubmit={handleSubmit} className="border-t-[3px] border-black p-4 bg-white">
-      <div className="relative flex items-end gap-3 border-brutal p-2 bg-gray-50 focus-within:bg-white transition-colors duration-150">
+    <form onSubmit={handleSubmit} className="border-t-[3px] border-black p-4 bg-white min-h-[120px] flex items-center shrink-0">
+      <div className="relative flex items-center gap-3 border-brutal p-2 bg-gray-50 focus-within:bg-white transition-colors duration-150 w-full">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -45,10 +45,10 @@ export default function ChatInput({ onSendMessage, disabled }: ChatInputProps) {
           onKeyDown={handleKeyDown}
           disabled={disabled}
           placeholder='Ask about "otitis media", "tonsillitis" or "vertigo"...'
-          className="flex-1 max-h-32 min-h-[40px] resize-none outline-none font-sans font-medium text-sm bg-transparent py-2.5 px-3 placeholder-black/40 disabled:opacity-50 text-black leading-relaxed"
+          className="flex-1 max-h-32 min-h-[40px] resize-none outline-none font-sans font-medium text-sm bg-transparent py-2.5 pl-2 pr-3 placeholder-black/40 disabled:opacity-50 text-black leading-relaxed"
         />
 
-        <div className="flex items-center gap-3 pr-2 pb-1.5 shrink-0 select-none">
+        <div className="flex items-center gap-3 pr-2 shrink-0 select-none">
           <span className="hidden sm:flex items-center gap-1 text-[10px] font-mono font-bold text-black/40 uppercase">
             Enter <CornerDownLeft className="w-3.5 h-3.5 stroke-[2.5]" />
           </span>

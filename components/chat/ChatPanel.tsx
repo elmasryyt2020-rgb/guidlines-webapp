@@ -21,7 +21,6 @@ export default function ChatPanel() {
     fetchConversations,
     fetchMessages,
     selectConversation,
-    clearDraft,
     checkDBConnection,
   } = useChatStore();
 
@@ -104,12 +103,36 @@ export default function ChatPanel() {
     const tempConvId = activeConversationId;
     const isDraft = tempConvId === DRAFT_CONVERSATION_ID;
     let activeId = tempConvId;
-    setSyncStatus("syncing");
 
+    // Add user message and assistant placeholder to UI state immediately so they render instantly
+    const userMessageId = `msg-${Date.now()}`;
     const assistantMessageId = `msg-reply-${Date.now()}`;
+
+    if (activeId) {
+      addMessage(activeId, {
+        id: userMessageId,
+        role: "user",
+        content: text,
+        timestamp: "Just now",
+      });
+
+      addMessage(activeId, {
+        id: assistantMessageId,
+        role: "assistant",
+        content: "",
+        timestamp: "Just now",
+        isStreaming: true,
+      });
+    }
+
+    setSyncStatus("syncing");
 
     try {
       const token = await getToken();
+      if (!token) {
+        throw new Error("Your session has expired. Please sign in again.");
+      }
+
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/chat`,
         {
@@ -127,7 +150,29 @@ export default function ChatPanel() {
       );
 
       if (!response.ok) {
-        throw new Error(await response.text());
+        let errorMsg = "An error occurred while communicating with the medical assistant server.";
+        try {
+          const bodyText = await response.text();
+          try {
+            const parsed = JSON.parse(bodyText);
+            let innerMsg = parsed.error || bodyText;
+            // Check if the error message itself is a nested JSON string (e.g. from Gemini API)
+            if (typeof innerMsg === "string" && innerMsg.includes("{")) {
+              const startIdx = innerMsg.indexOf("{");
+              const jsonStr = innerMsg.substring(startIdx);
+              try {
+                const innerParsed = JSON.parse(jsonStr);
+                if (innerParsed.error && innerParsed.error.message) {
+                  innerMsg = `Failed to call Gemini: ${innerParsed.error.message}`;
+                }
+              } catch {}
+            }
+            errorMsg = innerMsg;
+          } catch {
+            errorMsg = bodyText;
+          }
+        } catch {}
+        throw new Error(errorMsg);
       }
 
       // Check if conversation ID changed (new conversation generated on server)
@@ -135,32 +180,29 @@ export default function ChatPanel() {
 
       if (returnedConvId && returnedConvId !== tempConvId) {
         activeId = returnedConvId;
-        // The draft became a real conversation: clear it and re-fetch from DB.
-        if (isDraft) clearDraft();
-        await fetchConversations(getToken);
-        selectConversation(activeId);
+        if (isDraft) {
+          // Atomic: migrate messages, switch active ID, and clear draft in one setState
+          // so there's no gap where activeConversationId points at an empty draft.
+          const draftMessages = useChatStore.getState().messages[DRAFT_CONVERSATION_ID] || [];
+          useChatStore.setState((s) => ({
+            activeConversationId: returnedConvId,
+            draftConversation: null,
+            messages: {
+              ...s.messages,
+              [returnedConvId]: draftMessages,
+              [DRAFT_CONVERSATION_ID]: [],
+            },
+          }));
+        } else {
+          selectConversation(activeId);
+        }
+        // Refresh sidebar list (fire-and-forget, no need to block the stream)
+        fetchConversations(getToken);
       }
 
       if (!activeId) {
         throw new Error("No active conversation ID returned from server.");
       }
-
-      // Add user message to UI state immediately
-      addMessage(activeId, {
-        id: `msg-${Date.now()}`,
-        role: "user",
-        content: text,
-        timestamp: "Just now",
-      });
-
-      // Add assistant placeholder
-      addMessage(activeId, {
-        id: assistantMessageId,
-        role: "assistant",
-        content: "",
-        timestamp: "Just now",
-        isStreaming: true,
-      });
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
@@ -196,23 +238,24 @@ export default function ChatPanel() {
       cleanupRef.current = null;
 
     } catch (err) {
-      console.error("Chat streaming failed", err);
+      console.warn("Chat streaming failed", err);
       setSyncStatus("offline");
 
       const targetId = activeId || tempConvId || "error";
-      addMessage(targetId, {
-        id: `err-${Date.now()}`,
-        role: "assistant",
-        content: "An error occurred while communicating with the medical assistant server.",
-        timestamp: "Just now",
-      });
+      const errorMsg = err instanceof Error ? err.message : "An error occurred while communicating with the medical assistant server.";
+      // Update the placeholder assistant message with the error message
+      updateLastMessage(
+        targetId,
+        errorMsg,
+        false
+      );
     }
   };
 
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-white">
       {/* Panel Header */}
-      <div className="px-5 py-4 border-b-[3px] border-black flex items-center justify-between bg-cyan-brutal/10">
+      <div className="h-[73px] px-5 border-b-[3px] border-black flex items-center justify-between bg-cyan-brutal/10 shrink-0">
         <div className="flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-black stroke-[2.5]" />
           <span className="font-display font-black text-sm uppercase tracking-tight">

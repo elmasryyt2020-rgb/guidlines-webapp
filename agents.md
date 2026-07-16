@@ -28,7 +28,7 @@ Use the following stack:
 - **Authentication**: Supabase Auth (email/password + magic link, custom Neo-brutalist auth screens, `@supabase/ssr` cookie-based middleware route protection)
 - **Database**: Supabase PostgreSQL with `pgvector` extension
 - **AI Models (Gemini)**:
-  - Chat & Generation: `gemini-2.5-flash`
+  - Chat & Generation: `gemini-3.5-flash`
   - Embeddings: `text-embedding-04` (768 dimensions)
 - **Edge API**: Supabase Edge Functions (Deno-based TypeScript serverless environment)
 - **Mind Map Engine**: React Flow (interactive node-based diagramming canvas)

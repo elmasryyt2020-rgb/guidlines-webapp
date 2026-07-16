@@ -7,13 +7,13 @@ import * as dotenv from 'dotenv';
 // Load environment variables from .env.local
 dotenv.config({ path: '.env.local' });
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !GEMINI_API_KEY) {
   console.error('CRITICAL ERROR: Missing environment variables in .env.local');
-  console.error('Ensure SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and GEMINI_API_KEY are defined.');
+  console.error('Ensure SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY, and GEMINI_API_KEY are defined.');
   process.exit(1);
 }
 
@@ -35,9 +35,28 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 });
 
 const ENT_DIR = path.join(process.cwd(), 'ENT');
+const GUIDELINES_DIR = path.join(process.cwd(), 'Guidlines');
 const CHUNK_SIZE = 3000;
 const OVERLAP = 500;
 const EMBEDDING_BATCH_SIZE = 15; // Safe batch size to respect both RPM and daily limits
+
+// Helper function to recursively find PDF files in a directory
+function findPdfFiles(dir: string): string[] {
+  let results: string[] = [];
+  if (!fs.existsSync(dir)) return results;
+
+  const list = fs.readdirSync(dir);
+  for (const file of list) {
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+    if (stat && stat.isDirectory()) {
+      results = results.concat(findPdfFiles(filePath));
+    } else if (file.toLowerCase().endsWith('.pdf')) {
+      results.push(filePath);
+    }
+  }
+  return results;
+}
 
 interface GuidelineRecord {
   file_name: string;
@@ -179,17 +198,24 @@ async function main() {
   }
   console.log(`Found ${processedFiles.size} unique files in database.`);
 
-  // 2. Scan ENT directory for PDF files
-  if (!fs.existsSync(ENT_DIR)) {
-    console.error(`ENT directory not found at: ${ENT_DIR}`);
-    process.exit(1);
-  }
+  // 2. Scan directories for PDF files
+  const entFiles = findPdfFiles(ENT_DIR).map(filePath => ({
+    absolutePath: filePath,
+    dbFileName: path.basename(filePath)
+  }));
+  console.log(`Found ${entFiles.length} PDF files in "./ENT" folder.`);
 
-  const files = fs.readdirSync(ENT_DIR).filter((f) => f.toLowerCase().endsWith('.pdf'));
-  console.log(`Found ${files.length} PDF files in "./ENT" folder.`);
+  const guidelinesFiles = findPdfFiles(GUIDELINES_DIR).map(filePath => ({
+    absolutePath: filePath,
+    dbFileName: path.relative(GUIDELINES_DIR, filePath).replace(/\\/g, '/')
+  }));
+  console.log(`Found ${guidelinesFiles.length} PDF files in "./Guidlines" folder.`);
 
-  const filesToProcess = files.filter((f) => !processedFiles.has(f));
-  console.log(`Files to process: ${filesToProcess.length} (${files.length - filesToProcess.length} files already processed will be skipped)`);
+  const allFiles = [...entFiles, ...guidelinesFiles];
+  console.log(`Total PDF files found: ${allFiles.length}`);
+
+  const filesToProcess = allFiles.filter((f) => !processedFiles.has(f.dbFileName));
+  console.log(`Files to process: ${filesToProcess.length} (${allFiles.length - filesToProcess.length} files already processed will be skipped)`);
 
   if (filesToProcess.length === 0) {
     console.log('No new files to process. Ingestion complete!');
@@ -198,18 +224,19 @@ async function main() {
 
   // 3. Process each file
   for (const file of filesToProcess) {
-    const filePath = path.join(ENT_DIR, file);
-    console.log(`\nProcessing: "${file}"...`);
+    const filePath = file.absolutePath;
+    const dbName = file.dbFileName;
+    console.log(`\nProcessing: "${dbName}"...`);
 
     try {
       // Clear any partial chunks that might have been uploaded on a failed run
       const { error: deleteError } = await supabase
         .from('guideline_chunks')
         .delete()
-        .eq('file_name', file);
+        .eq('file_name', dbName);
 
       if (deleteError) {
-        console.warn(`Warning: Could not clear prior chunks for "${file}":`, deleteError.message);
+        console.warn(`Warning: Could not clear prior chunks for "${dbName}":`, deleteError.message);
       }
 
       const dataBuffer = fs.readFileSync(filePath);
@@ -217,12 +244,12 @@ async function main() {
       const text = parsedData.text;
 
       if (!text || text.trim().length === 0) {
-        console.warn(`Skipping empty or unparseable PDF: "${file}"`);
+        console.warn(`Skipping empty or unparseable PDF: "${dbName}"`);
         continue;
       }
 
       const chunks = chunkText(text, CHUNK_SIZE, OVERLAP);
-      console.log(`Parsed "${file}" successfully. Created ${chunks.length} chunks.`);
+      console.log(`Parsed "${dbName}" successfully. Created ${chunks.length} chunks.`);
 
       const recordsToInsert: GuidelineRecord[] = [];
 
@@ -237,7 +264,7 @@ async function main() {
 
         for (let j = 0; j < chunkBatch.length; j++) {
           recordsToInsert.push({
-            file_name: file,
+            file_name: dbName,
             content: chunkBatch[j],
             chunk_index: i + j,
             embedding: embeddings[j],
@@ -255,11 +282,11 @@ async function main() {
         throw new Error(`Database Insert Error: ${insertError.message}`);
       }
 
-      console.log(`Successfully ingested: "${file}"`);
+      console.log(`Successfully ingested: "${dbName}"`);
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`ERROR processing "${file}":`, errorMsg);
-      console.log(`Skipping file "${file}" and continuing...`);
+      console.error(`ERROR processing "${dbName}":`, errorMsg);
+      console.log(`Skipping file "${dbName}" and continuing...`);
     }
   }
 

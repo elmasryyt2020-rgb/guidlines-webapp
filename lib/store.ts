@@ -113,6 +113,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   fetchMessages: async (conversationId, getToken) => {
+    // Skip fetching if the conversation is currently streaming to prevent overwriting active stream state.
+    const current = get().messages[conversationId] || [];
+    if (current.some((m) => m.isStreaming)) {
+      return;
+    }
     try {
       const supabase = await getSupabaseClient(getToken);
       const { data, error } = await supabase

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Mail, Lock, UserPlus, ArrowRight, AlertCircle } from "lucide-react";
+import { Mail, Lock, User, UserPlus, ArrowRight, AlertCircle } from "lucide-react";
 import AuthCard from "@/components/auth/AuthCard";
 import AuthInput from "@/components/auth/AuthInput";
 import AuthButton from "@/components/auth/AuthButton";
@@ -11,6 +11,8 @@ import { supabase } from "@/lib/supabaseClient";
 
 export default function SignUpPage() {
   const router = useRouter();
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -21,6 +23,10 @@ export default function SignUpPage() {
     e.preventDefault();
     setError(null);
 
+    if (!firstName.trim() || !lastName.trim()) {
+      setError("First and Last name are required.");
+      return;
+    }
     if (password.length < 6) {
       setError("Password must be at least 6 characters.");
       return;
@@ -31,7 +37,17 @@ export default function SignUpPage() {
     }
 
     setLoading(true);
-    const { data, error } = await supabase.auth.signUp({ email, password });
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+          full_name: `${firstName.trim()} ${lastName.trim()}`.trim(),
+        },
+      },
+    });
     setLoading(false);
 
     if (error) {
@@ -69,6 +85,18 @@ export default function SignUpPage() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <AuthInput
+            id="firstName" label="First Name" type="text" value={firstName}
+            onChange={(e) => setFirstName(e.target.value)} icon={User}
+            placeholder="e.g. Ahmed" autoComplete="given-name" required
+          />
+          <AuthInput
+            id="lastName" label="Last Name" type="text" value={lastName}
+            onChange={(e) => setLastName(e.target.value)} icon={User}
+            placeholder="e.g. Ali" autoComplete="family-name" required
+          />
+        </div>
         <AuthInput
           id="email" label="Email" type="email" value={email}
           onChange={(e) => setEmail(e.target.value)} icon={Mail}

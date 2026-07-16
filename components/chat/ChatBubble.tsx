@@ -11,16 +11,57 @@ interface ChatBubbleProps {
 export default function ChatBubble({ message }: ChatBubbleProps) {
   const isUser = message.role === "user";
 
+  // Render inline bold and italic markdown without adding block-level elements.
+  const renderInlineMarkdown = (text: string): React.ReactNode[] => {
+    const segments: React.ReactNode[] = [];
+    const regex = /(\*\*[\s\S]*?\*\*|\*[\s\S]*?\*)/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        segments.push(text.slice(lastIndex, match.index).replace(/\*/g, ""));
+      }
+
+      const marker = match[0];
+      const isBold = marker.startsWith("**");
+      const inner = isBold ? marker.slice(2, -2) : marker.slice(1, -1);
+      const cleanInner = inner.replace(/\*/g, "");
+
+      if (isBold) {
+        segments.push(
+          <strong key={segments.length} className="font-black text-black">
+            {cleanInner}
+          </strong>
+        );
+      } else {
+        segments.push(
+          <em key={segments.length} className="italic text-black/90">
+            {cleanInner}
+          </em>
+        );
+      }
+
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      segments.push(text.slice(lastIndex).replace(/\*/g, ""));
+    }
+
+    return segments;
+  };
+
   // Simple parser for standard markdown structures used in our responses, grouping lists semantically
   const renderContent = (content: string, isStreaming?: boolean) => {
     const lines = content.split("\n");
     const blocks: { type: "bullet-list" | "numbered-list" | "other"; lines: string[] }[] = [];
-    
+
     lines.forEach((line) => {
       const isBullet = line.startsWith("* ") || line.startsWith("- ");
       const isNumbered = /^\d+\.\s/.test(line);
       const currentBlock = blocks[blocks.length - 1];
-      
+
       if (isBullet) {
         if (currentBlock && currentBlock.type === "bullet-list") {
           currentBlock.lines.push(line);
@@ -50,14 +91,38 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
           <ul key={blockIdx} className="space-y-1 mb-3">
             {block.lines.map((line, lineIdx) => {
               const isLastLine = isLastBlock && lineIdx === block.lines.length - 1;
-              const parts = line.substring(2).split("**");
+              const contentStr = line.substring(2);
+
+              // Heading inside a bullet: "* #### Heading text"
+              if (contentStr.startsWith("#### ")) {
+                const isRedFlag = contentStr.toLowerCase().includes("red flag") || contentStr.toLowerCase().includes("critical");
+                return (
+                  <li key={lineIdx} className="ml-4 flex items-start gap-2 pl-1">
+                    <span className="text-lime-brutal font-black select-none shrink-0 mt-1">•</span>
+                    <h4
+                      className={`font-display font-bold text-sm uppercase tracking-tight flex items-center gap-2 ${
+                        isRedFlag ? "text-pink-brutal" : "text-black"
+                      }`}
+                    >
+                      {isRedFlag ? (
+                        <AlertTriangle className="w-4 h-4 shrink-0 text-pink-brutal stroke-[2.5]" />
+                      ) : (
+                        <CheckCircle className="w-4 h-4 shrink-0 text-lime-brutal stroke-[2.5]" />
+                      )}
+                      <span>
+                        {renderInlineMarkdown(contentStr.replace("#### ", ""))}
+                        {isLastLine && cursor}
+                      </span>
+                    </h4>
+                  </li>
+                );
+              }
+
               return (
                 <li key={lineIdx} className="ml-4 flex items-start gap-2 text-sm font-sans font-medium pl-1 text-black/90">
                   <span className="text-lime-brutal font-black select-none shrink-0">•</span>
                   <span>
-                    {parts.map((part, pIdx) =>
-                      pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
-                    )}
+                    {renderInlineMarkdown(contentStr)}
                     {isLastLine && cursor}
                   </span>
                 </li>
@@ -66,23 +131,20 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
           </ul>
         );
       }
-      
+
       if (block.type === "numbered-list") {
         return (
           <ol key={blockIdx} className="space-y-1 mb-3">
             {block.lines.map((line, lineIdx) => {
               const isLastLine = isLastBlock && lineIdx === block.lines.length - 1;
               const contentStr = line.replace(/^\d+\.\s/, "");
-              const parts = contentStr.split("**");
               return (
                 <li key={lineIdx} className="ml-4 font-sans text-sm font-medium text-black/90 flex gap-1.5">
                   <span className="font-mono font-bold text-[10px] bg-black text-white px-1 py-0.5 leading-none self-start shrink-0 border border-black shadow-[1px_1px_0px_0px_#000]">
                     {line.match(/^\d+/)![0]}
                   </span>
                   <span>
-                    {parts.map((part, pIdx) =>
-                      pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
-                    )}
+                    {renderInlineMarkdown(contentStr)}
                     {isLastLine && cursor}
                   </span>
                 </li>
@@ -94,7 +156,40 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
 
       // Other block (should be single line)
       const line = block.lines[0];
-      
+
+      // H1 headings
+      if (line.startsWith("# ")) {
+        return (
+          <h1
+            key={blockIdx}
+            className="font-display font-black text-xl uppercase tracking-tight text-black mt-5 mb-3 first:mt-0"
+          >
+            {renderInlineMarkdown(line.substring(2))}
+            {isLastBlock && cursor}
+          </h1>
+        );
+      }
+      // H2 headings
+      if (line.startsWith("## ")) {
+        return (
+          <h2
+            key={blockIdx}
+            className="font-display font-black text-lg uppercase tracking-tight text-black mt-4 mb-2 first:mt-0"
+          >
+            {renderInlineMarkdown(line.substring(3))}
+            {isLastBlock && cursor}
+          </h2>
+        );
+      }
+      // Horizontal Rule
+      if (line.trim() === "---") {
+        return (
+          <hr
+            key={blockIdx}
+            className="border-t-2 border-black/30 my-4"
+          />
+        );
+      }
       // H3 headings
       if (line.startsWith("### ")) {
         return (
@@ -126,7 +221,7 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
               <CheckCircle className="w-4 h-4 shrink-0 text-lime-brutal stroke-[2.5]" />
             )}
             <span>
-              {line.replace("#### ", "")}
+              {renderInlineMarkdown(line.replace("#### ", ""))}
               {isLastBlock && cursor}
             </span>
           </h4>
@@ -143,13 +238,10 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
         }
         return <div key={blockIdx} className="h-2" />;
       }
-      
-      const parts = line.split("**");
+
       return (
         <p key={blockIdx} className="text-sm font-sans font-medium leading-relaxed mb-2 text-black/90">
-          {parts.map((part, pIdx) =>
-            pIdx % 2 === 1 ? <strong key={pIdx} className="font-black text-black">{part}</strong> : part
-          )}
+          {renderInlineMarkdown(line)}
           {isLastBlock && cursor}
         </p>
       );

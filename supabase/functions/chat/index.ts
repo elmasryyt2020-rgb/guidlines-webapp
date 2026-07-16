@@ -1,6 +1,17 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
 
+function decodeJwtClaims(token: string): { kid?: string; iss?: string; sub?: string } | null {
+  try {
+    const [headerB64, payloadB64] = token.split(".");
+    const header = JSON.parse(atob(headerB64));
+    const payload = JSON.parse(atob(payloadB64));
+    return { kid: header.kid, iss: payload.iss, sub: payload.sub };
+  } catch {
+    return null;
+  }
+}
+
 interface GuidelineChunk {
   file_name: string;
   content: string;
@@ -46,12 +57,23 @@ serve(async (req) => {
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
     // Verify the Supabase access token and extract the user id
+    const tokenClaims = decodeJwtClaims(token);
+    console.log(
+      `[chat] Auth attempt. Configured SUPABASE_URL: ${supabaseUrl}, token issuer: ${tokenClaims?.iss ?? "unknown"}, kid: ${tokenClaims?.kid ?? "unknown"}`
+    );
+
     const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
     if (authError || !user) {
-      return new Response(JSON.stringify({ error: "Unauthorized token" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      const detail = authError?.message ?? "Invalid or expired token";
+      return new Response(
+        JSON.stringify({
+          error: `Unauthorized token: ${detail}. Ensure the Edge Function's SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY secrets belong to the same project that issued this token (issuer: ${tokenClaims?.iss ?? "unknown"}).`,
+        }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
     const userId = user.id;
 
@@ -89,8 +111,42 @@ serve(async (req) => {
         });
       }
     } else {
-      // Create new conversation
-      const title = message.split(" ").slice(0, 5).join(" ") || "New consultation";
+      // Call Gemini to generate a concise summary/title for the conversation based on the first message
+      let title = "New consultation";
+      try {
+        const titleUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${geminiKey}`;
+        const titleResponse = await fetch(titleUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              role: "user",
+              parts: [{
+                text: `You are a medical guidelines assistant. Summarize the following doctor's query into a very short, professional, clinical title (2 to 4 words). Do not use any emojis, punctuation, or extra words.
+Query: "${message}"`
+              }]
+            }],
+            generationConfig: {
+              maxOutputTokens: 20,
+              temperature: 0.5,
+            }
+          })
+        });
+        if (titleResponse.ok) {
+          const titleData = await titleResponse.json();
+          const genTitle = titleData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          if (genTitle) {
+            title = genTitle.replace(/["'./]/g, "").trim(); // strip quotes and punctuation
+          }
+        } else {
+          console.error(`Gemini title generation failed with status: ${titleResponse.status}`);
+          title = message.split(" ").slice(0, 5).join(" ") || "New consultation";
+        }
+      } catch (titleErr) {
+        console.error("Failed to generate title with Gemini, falling back to slice:", titleErr);
+        title = message.split(" ").slice(0, 5).join(" ") || "New consultation";
+      }
+
       const { data: convData, error: convError } = await supabaseAdmin
         .from("conversations")
         .insert({ title, user_id: userId })
@@ -148,7 +204,7 @@ serve(async (req) => {
       console.error(`Vector search error: ${rpcError.message}`);
     }
 
-    const guidelinesContext = ((contextChunks || []) as GuidelineChunk[]
+    const guidelinesContext = ((contextChunks || []) as GuidelineChunk[])
       .map((c) => `[Document: ${c.file_name}]\n${c.content}`)
       .join("\n\n---\n\n");
 
@@ -204,7 +260,7 @@ ${guidelinesContext}
     });
 
     // Call Gemini stream API
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=${geminiKey}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&key=${geminiKey}`;
     const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
