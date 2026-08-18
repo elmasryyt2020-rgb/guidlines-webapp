@@ -1,15 +1,15 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
 
-function decodeJwtClaims(token: string): { kid?: string; iss?: string; sub?: string } | null {
-  try {
-    const [headerB64, payloadB64] = token.split(".");
-    const header = JSON.parse(atob(headerB64));
-    const payload = JSON.parse(atob(payloadB64));
-    return { kid: header.kid, iss: payload.iss, sub: payload.sub };
-  } catch {
-    return null;
-  }
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+interface DBMessage {
+  role: string;
+  content: string;
 }
 
 interface GuidelineChunk {
@@ -17,26 +17,27 @@ interface GuidelineChunk {
   content: string;
 }
 
-interface DBMessage {
-  role: "user" | "assistant";
-  content: string;
+function decodeJwtClaims(token: string) {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const jsonStr = atob(base64);
+    return JSON.parse(jsonStr);
+  } catch (_) {
+    return null;
+  }
 }
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-serve(async (req) => {
+export default async function chatHandler(req: Request) {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return new Response(JSON.stringify({ error: "Missing authorization header" }), {
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -44,30 +45,24 @@ serve(async (req) => {
 
     const token = authHeader.split(" ")[1];
 
-    // Validate all required secrets before any external calls
+    // Validate all required secrets
     const geminiKey = Deno.env.get("GEMINI_API_KEY");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-    if (!geminiKey) throw new Error("MISSING_SECRET: GEMINI_API_KEY is not set in Supabase Edge Function secrets.");
-    if (!supabaseUrl) throw new Error("MISSING_SECRET: SUPABASE_URL is not set in Supabase Edge Function secrets.");
-    if (!supabaseServiceKey) throw new Error("MISSING_SECRET: SUPABASE_SERVICE_ROLE_KEY is not set in Supabase Edge Function secrets.");
+    if (!geminiKey) throw new Error("MISSING_SECRET: GEMINI_API_KEY is not set.");
+    if (!supabaseUrl) throw new Error("MISSING_SECRET: SUPABASE_URL is not set.");
+    if (!supabaseServiceKey) throw new Error("MISSING_SECRET: SUPABASE_SERVICE_ROLE_KEY is not set.");
 
-    // Initialize Supabase Admin Client
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Verify the Supabase access token and extract the user id
     const tokenClaims = decodeJwtClaims(token);
-    console.log(
-      `[chat] Auth attempt. Configured SUPABASE_URL: ${supabaseUrl}, token issuer: ${tokenClaims?.iss ?? "unknown"}, kid: ${tokenClaims?.kid ?? "unknown"}`
-    );
 
     const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
     if (authError || !user) {
       const detail = authError?.message ?? "Invalid or expired token";
       return new Response(
         JSON.stringify({
-          error: `Unauthorized token: ${detail}. Ensure the Edge Function's SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY secrets belong to the same project that issued this token (issuer: ${tokenClaims?.iss ?? "unknown"}).`,
+          error: `Unauthorized token: ${detail}.`,
         }),
         {
           status: 401,
@@ -90,14 +85,13 @@ serve(async (req) => {
 
     // 1. Resolve or Create Conversation
     if (activeConvId) {
-      // Security Check: Verify BOLA / ownership
-      const { data: conv, error: convError } = await supabaseAdmin
+      const { data: conv, error: checkError } = await supabaseAdmin
         .from("conversations")
         .select("user_id")
         .eq("id", activeConvId)
         .maybeSingle();
 
-      if (convError || !conv) {
+      if (checkError || !conv) {
         return new Response(JSON.stringify({ error: "Conversation not found" }), {
           status: 404,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -111,118 +105,101 @@ serve(async (req) => {
         });
       }
     } else {
-      // Call Gemini to generate a concise summary/title for the conversation based on the first message
-      let title = "New consultation";
-      try {
-        const titleUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${geminiKey}`;
-        const titleResponse = await fetch(titleUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{
-              role: "user",
-              parts: [{
-                text: `You are a medical guidelines assistant. Summarize the following doctor's query into a very short, professional, clinical title (2 to 4 words). Do not use any emojis, punctuation, or extra words.
-Query: "${message}"`
-              }]
-            }],
-            generationConfig: {
-              maxOutputTokens: 20,
-              temperature: 0.5,
-            }
-          })
-        });
-        if (titleResponse.ok) {
-          const titleData = await titleResponse.json();
-          const genTitle = titleData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-          if (genTitle) {
-            title = genTitle.replace(/["'./]/g, "").trim(); // strip quotes and punctuation
-          }
-        } else {
-          console.error(`Gemini title generation failed with status: ${titleResponse.status}`);
-          title = message.split(" ").slice(0, 5).join(" ") || "New consultation";
-        }
-      } catch (titleErr) {
-        console.error("Failed to generate title with Gemini, falling back to slice:", titleErr);
-        title = message.split(" ").slice(0, 5).join(" ") || "New consultation";
-      }
-
-      const { data: convData, error: convError } = await supabaseAdmin
+      const initialTitle = message.split(" ").slice(0, 5).join(" ") || "New consultation";
+      const newConvId = crypto.randomUUID();
+      const { data: convData, error: createError } = await supabaseAdmin
         .from("conversations")
-        .insert({ title, user_id: userId })
+        .insert({ id: newConvId, title: initialTitle, user_id: userId })
         .select()
         .single();
 
-      if (convError || !convData) {
-        throw new Error(`Failed to create conversation: ${convError?.message}`);
+      if (createError) {
+        throw new Error(`Failed to create conversation: ${createError?.message}`);
       }
-      activeConvId = convData.id;
+      activeConvId = convData?.id || newConvId;
 
-      // Seed an empty mindmap for this conversation
-      const { error: mapError } = await supabaseAdmin
+      await supabaseAdmin
         .from("mind_maps")
         .insert({ conversation_id: activeConvId, nodes: [], edges: [] });
 
-      if (mapError) {
-        console.error(`Failed to seed mind map: ${mapError.message}`);
-      }
+      // Async title summarization in background
+      (async () => {
+        try {
+          const titleUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiKey}`;
+          const titleResponse = await fetch(titleUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{
+                role: "user",
+                parts: [{ text: `Summarize this clinical query into 2 to 4 words title without emojis or quotes: "${message}"` }]
+              }],
+              generationConfig: { maxOutputTokens: 20, temperature: 0.5 }
+            })
+          });
+          if (titleResponse.ok) {
+            const titleData = await titleResponse.json();
+            const genTitle = titleData.candidates?.[0]?.content?.parts?.[0]?.text?.trim()?.replace(/["'./]/g, "");
+            if (genTitle) {
+              await supabaseAdmin.from("conversations").update({ title: genTitle }).eq("id", activeConvId);
+            }
+          }
+        } catch (_) {}
+      })();
     }
 
-    // 2. Fetch Embeddings for User Message
-    // Uses gemini-embedding-2 with 768 output dimensions to match the ingestion pipeline
-    const embedUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key=${geminiKey}`;
-    const embedResponse = await fetch(embedUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "models/gemini-embedding-2",
-        content: { parts: [{ text: message }] },
-        outputDimensionality: 768,
-      }),
-    });
+    // Prepare stream transform and return response IMMEDIATELY (<0.2s)
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
 
-    if (!embedResponse.ok) {
-      throw new Error(`Failed to generate embeddings: ${await embedResponse.text()}`);
-    }
-    const embedData = await embedResponse.json();
-    const embedding: number[] = embedData.embedding?.values ?? [];
-    if (embedding.length === 0) {
-      throw new Error("Embedding returned empty values. Check model access for this API key.");
-    }
+    // Heavy async pipeline (RAG + Gemini streaming) runs in background
+    (async () => {
+      let fullResponseText = "";
+      try {
+        // 2. Fetch Embeddings
+        const embedUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key=${geminiKey}`;
+        const embedResponse = await fetch(embedUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "models/gemini-embedding-2",
+            content: { parts: [{ text: message }] },
+            outputDimensionality: 768,
+          }),
+        });
 
-    // 3. Perform match_guidelines Vector Search
-    const { data: contextChunks, error: rpcError } = await supabaseAdmin.rpc(
-      "match_guidelines",
-      {
-        query_embedding: embedding,
-        match_threshold: 0.3,
-        match_count: 5,
-      }
-    );
+        let guidelinesContext = "";
+        if (embedResponse.ok) {
+          const embedData = await embedResponse.json();
+          const embedding: number[] = embedData.embedding?.values ?? [];
+          if (embedding.length > 0) {
+            const { data: contextChunks } = await supabaseAdmin.rpc("match_guidelines", {
+              query_embedding: embedding,
+              match_threshold: 0.3,
+              match_count: 5,
+            });
+            guidelinesContext = ((contextChunks || []) as GuidelineChunk[])
+              .map((c) => `[Document: ${c.file_name}]\n${c.content}`)
+              .join("\n\n---\n\n");
+          }
+        }
 
-    if (rpcError) {
-      console.error(`Vector search error: ${rpcError.message}`);
-    }
+        // 3. DB History & Save User Message
+        const { data: dbHistory } = await supabaseAdmin
+          .from("messages")
+          .select("role, content")
+          .eq("conversation_id", activeConvId)
+          .order("created_at", { ascending: true })
+          .limit(10);
 
-    const guidelinesContext = ((contextChunks || []) as GuidelineChunk[])
-      .map((c) => `[Document: ${c.file_name}]\n${c.content}`)
-      .join("\n\n---\n\n");
+        await supabaseAdmin
+          .from("messages")
+          .insert({ conversation_id: activeConvId, role: "user", content: message });
 
-    // 4. Fetch last 10 messages from db
-    const { data: dbHistory } = await supabaseAdmin
-      .from("messages")
-      .select("role, content")
-      .eq("conversation_id", activeConvId)
-      .order("created_at", { ascending: true })
-      .limit(10);
-
-    // Write user's message to db
-    await supabaseAdmin
-      .from("messages")
-      .insert({ conversation_id: activeConvId, role: "user", content: message });
-
-    // 5. Construct Prompt & Call Gemini stream REST API
-    const systemInstruction = `You are a medical guidelines assistant helping Egyptian healthcare doctors.
+        // 4. Construct Prompt
+        const systemInstruction = `You are a medical guidelines assistant helping Egyptian healthcare doctors.
 Use the following official guidelines from the Ministry of Health (MOH) of Egypt to answer the doctor's query.
 Answer direct, professional, and clear. State recommendations clearly.
 Citations must include the document name.
@@ -237,105 +214,95 @@ RELEVANT GUIDELINES CONTEXT:
 ${guidelinesContext}
 `;
 
-    const contents = [];
-    // System instruction passed inside first user prompt
-    contents.push({
-      role: "user",
-      parts: [{ text: `SYSTEM INSTRUCTIONS:\n${systemInstruction}\n\nBegin conversation history.` }],
-    });
-
-    if (dbHistory && dbHistory.length > 0) {
-      ((dbHistory || []) as DBMessage[]).forEach((msg) => {
+        const contents = [];
         contents.push({
-          role: msg.role === "user" ? "user" : "model",
-          parts: [{ text: msg.content }],
+          role: "user",
+          parts: [{ text: `SYSTEM INSTRUCTIONS:\n${systemInstruction}\n\nBegin conversation history.` }],
         });
-      });
-    }
 
-    // Append current user message
-    contents.push({
-      role: "user",
-      parts: [{ text: message }],
-    });
+        if (dbHistory && dbHistory.length > 0) {
+          ((dbHistory || []) as DBMessage[]).forEach((msg) => {
+            contents.push({
+              role: msg.role === "user" ? "user" : "model",
+              parts: [{ text: msg.content }],
+            });
+          });
+        }
 
-    // Call Gemini stream API
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&key=${geminiKey}`;
-    const geminiResponse = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents }),
-    });
+        contents.push({
+          role: "user",
+          parts: [{ text: message }],
+        });
 
-    if (!geminiResponse.ok) {
-      throw new Error(`Failed to call Gemini: ${await geminiResponse.text()}`);
-    }
+        // 5. Call Gemini Stream API
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?alt=sse&key=${geminiKey}`;
+        const geminiResponse = await fetch(geminiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contents }),
+        });
 
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-    const reader = geminiResponse.body?.getReader();
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
+        if (geminiResponse.ok && geminiResponse.body) {
+          const reader = geminiResponse.body.getReader();
+          let buffer = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
 
-    let fullResponseText = "";
-
-    // Read SSE from Gemini in background
-    (async () => {
-      try {
-        let buffer = "";
-        while (true) {
-          const { done, value } = await reader!.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              const jsonStr = line.slice(6).trim();
-              if (jsonStr === "[DONE]") continue;
-              try {
-                const parsed = JSON.parse(jsonStr);
-                const textChunk = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (textChunk) {
-                  fullResponseText += textChunk;
-                  // Stream back to client
-                  await writer.write(encoder.encode(textChunk));
-                }
-              } catch (_) {
-                // Ignore parsing errors for partial lines
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const jsonStr = line.slice(6).trim();
+                if (jsonStr === "[DONE]") continue;
+                try {
+                  const parsed = JSON.parse(jsonStr);
+                  const textChunk = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+                  if (textChunk) {
+                    fullResponseText += textChunk;
+                    await writer.write(encoder.encode(textChunk));
+                  }
+                } catch (_) {}
               }
             }
           }
         }
-        
+
         // Save assistant message to DB
         if (fullResponseText) {
           await supabaseAdmin
             .from("messages")
             .insert({ conversation_id: activeConvId, role: "assistant", content: fullResponseText });
         }
-      } catch (err) {
-        console.error("Stream reader error: ", err);
+      } catch (err: any) {
+        console.error("[chat] Background stream error:", err);
+        if (!fullResponseText) {
+          await writer.write(encoder.encode(`Failed to complete request: ${err?.message || "Unknown error"}`));
+        }
       } finally {
-        await writer.close();
+        try {
+          await writer.close();
+        } catch {}
       }
     })();
 
     return new Response(readable, {
       headers: {
         ...corsHeaders,
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache",
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
         "Connection": "keep-alive",
         "X-Conversation-Id": activeConvId,
         "Access-Control-Expose-Headers": "X-Conversation-Id",
       },
     });
-  } catch (err) {
+
+  } catch (err: any) {
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
-});
+}

@@ -27,12 +27,17 @@ export default function ChatPanel() {
   const { fetchMindMap, resetLocalMindMap } = useMindMapStore();
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const cleanupRef = useRef<(() => void) | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const streamingConvIdRef = useRef<string | null>(null);
+  const isStreamingRef = useRef<boolean>(false);
+  const [, setStreamTick] = React.useState<number>(0);
 
   const activeMessages = useMemo(() => {
     return activeConversationId ? messages[activeConversationId] || [] : [];
   }, [activeConversationId, messages]);
-  const isAssistantStreaming = activeMessages.some((msg) => msg.role === "assistant" && msg.isStreaming);
+
+  const lastMsg = activeMessages[activeMessages.length - 1];
+  const isAssistantStreaming = lastMsg?.role === "assistant" && !!lastMsg?.isStreaming;
 
   // Probe DB reachability immediately on mount (auth-independent)
   useEffect(() => {
@@ -55,30 +60,47 @@ export default function ChatPanel() {
       resetLocalMindMap();
       return;
     }
+    // Skip DB fetch while a stream is in progress for this conversation
+    if (isStreamingRef.current && activeConversationId === streamingConvIdRef.current) return;
     fetchMessages(activeConversationId, getToken);
     fetchMindMap(activeConversationId, getToken);
   }, [activeConversationId, getToken, fetchMessages, fetchMindMap, resetLocalMindMap]);
 
-  // Cleanup stream when user switches conversations or unmounts
+  // Abort stream ONLY if user explicitly switches away to a DIFFERENT conversation
+  useEffect(() => {
+    if (
+      abortControllerRef.current &&
+      streamingConvIdRef.current &&
+      activeConversationId !== streamingConvIdRef.current
+    ) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      const staleId = streamingConvIdRef.current;
+      streamingConvIdRef.current = null;
+      isStreamingRef.current = false;
+
+      // Finalize last message on stale conversation
+      if (staleId) {
+        const state = useChatStore.getState();
+        const currentMsgs = state.messages[staleId] || [];
+        const last = currentMsgs[currentMsgs.length - 1];
+        if (last && last.role === "assistant" && last.isStreaming) {
+          state.updateLastMessage(staleId, last.content, false);
+        }
+        state.setSyncStatus("synced");
+      }
+    }
+  }, [activeConversationId]);
+
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (cleanupRef.current) {
-        cleanupRef.current();
-        cleanupRef.current = null;
-
-        // Reset streaming state in store to prevent input from being permanently disabled
-        if (activeConversationId) {
-          const state = useChatStore.getState();
-          const currentMsgs = state.messages[activeConversationId] || [];
-          const lastMsg = currentMsgs[currentMsgs.length - 1];
-          if (lastMsg && lastMsg.role === "assistant" && lastMsg.isStreaming) {
-            state.updateLastMessage(activeConversationId, lastMsg.content, false);
-          }
-          state.setSyncStatus("synced");
-        }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
       }
     };
-  }, [activeConversationId]);
+  }, []);
 
   // Scroll to bottom under proper UX rules (if user sent message or user is already close to bottom)
   useEffect(() => {
@@ -95,37 +117,40 @@ export default function ChatPanel() {
     if (!user) return;
 
     // Clear existing stream if any
-    if (cleanupRef.current) {
-      cleanupRef.current();
-      cleanupRef.current = null;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
 
-    const tempConvId = activeConversationId;
-    const isDraft = tempConvId === DRAFT_CONVERSATION_ID;
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    const tempConvId = activeConversationId || DRAFT_CONVERSATION_ID;
+    const isDraft = !activeConversationId || activeConversationId === DRAFT_CONVERSATION_ID;
     let activeId = tempConvId;
+
+    streamingConvIdRef.current = tempConvId;
+    isStreamingRef.current = true;
+    setSyncStatus("syncing");
 
     // Add user message and assistant placeholder to UI state immediately so they render instantly
     const userMessageId = `msg-${Date.now()}`;
     const assistantMessageId = `msg-reply-${Date.now()}`;
 
-    if (activeId) {
-      addMessage(activeId, {
-        id: userMessageId,
-        role: "user",
-        content: text,
-        timestamp: "Just now",
-      });
+    addMessage(tempConvId, {
+      id: userMessageId,
+      role: "user",
+      content: text,
+      timestamp: "Just now",
+    });
 
-      addMessage(activeId, {
-        id: assistantMessageId,
-        role: "assistant",
-        content: "",
-        timestamp: "Just now",
-        isStreaming: true,
-      });
-    }
-
-    setSyncStatus("syncing");
+    addMessage(tempConvId, {
+      id: assistantMessageId,
+      role: "assistant",
+      content: "",
+      timestamp: "Just now",
+      isStreaming: true,
+    });
 
     try {
       const token = await getToken();
@@ -144,8 +169,9 @@ export default function ChatPanel() {
           body: JSON.stringify({
             message: text,
             // Drafts have no DB row yet; the server creates one on first message.
-            conversationId: isDraft ? undefined : tempConvId || undefined,
+            conversationId: isDraft ? undefined : tempConvId,
           }),
+          signal: abortController.signal,
         }
       );
 
@@ -180,17 +206,20 @@ export default function ChatPanel() {
 
       if (returnedConvId && returnedConvId !== tempConvId) {
         activeId = returnedConvId;
+        // Update streaming conversation ref first so effects don't treat this as an external switch
+        streamingConvIdRef.current = returnedConvId;
+
         if (isDraft) {
           // Atomic: migrate messages, switch active ID, and clear draft in one setState
           // so there's no gap where activeConversationId points at an empty draft.
-          const draftMessages = useChatStore.getState().messages[DRAFT_CONVERSATION_ID] || [];
+          const draftMessages = useChatStore.getState().messages[tempConvId] || [];
           useChatStore.setState((s) => ({
             activeConversationId: returnedConvId,
             draftConversation: null,
             messages: {
               ...s.messages,
               [returnedConvId]: draftMessages,
-              [DRAFT_CONVERSATION_ID]: [],
+              [tempConvId]: [],
             },
           }));
         } else {
@@ -205,50 +234,56 @@ export default function ChatPanel() {
       }
 
       const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("Failed to initialize response stream reader.");
+      }
+
       const decoder = new TextDecoder();
       let accumulatedText = "";
 
-      // Setup a way to abort/cleanup if conversation changes
-      let isAborted = false;
-      cleanupRef.current = () => {
-        isAborted = true;
-        try {
-          reader?.cancel();
-        } catch {}
-      };
-
       while (true) {
-        const { done, value } = await reader!.read();
-        if (done || isAborted) break;
+        const { done, value } = await reader.read();
+        if (done || abortController.signal.aborted) break;
 
         const chunk = decoder.decode(value, { stream: true });
         accumulatedText += chunk;
         updateLastMessage(activeId, accumulatedText, true);
+        setStreamTick((t) => t + 1);
       }
 
-      if (!isAborted) {
+      if (!abortController.signal.aborted) {
         // Finalize message stream
+        isStreamingRef.current = false;
+        streamingConvIdRef.current = null;
         updateLastMessage(activeId, accumulatedText, false);
         setSyncStatus("synced");
 
         // Fetch mind map updates to sync if the map changes alongside the chat RAG
         await fetchMindMap(activeId, getToken);
       }
-
-      cleanupRef.current = null;
-
-    } catch (err) {
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
+      if (abortController.signal.aborted) {
+        return;
+      }
       console.warn("Chat streaming failed", err);
-      setSyncStatus("offline");
+      setSyncStatus("synced");
 
       const targetId = activeId || tempConvId || "error";
       const errorMsg = err instanceof Error ? err.message : "An error occurred while communicating with the medical assistant server.";
-      // Update the placeholder assistant message with the error message
       updateLastMessage(
         targetId,
         errorMsg,
         false
       );
+    } finally {
+      if (abortControllerRef.current === abortController) {
+        abortControllerRef.current = null;
+        streamingConvIdRef.current = null;
+        isStreamingRef.current = false;
+      }
     }
   };
 

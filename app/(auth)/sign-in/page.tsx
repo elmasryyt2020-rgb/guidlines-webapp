@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Mail, Lock, ShieldCheck, ArrowRight, AlertCircle } from "lucide-react";
@@ -11,7 +11,7 @@ import { supabase } from "@/lib/supabaseClient";
 
 type Mode = "password" | "magic";
 
-export default function SignInPage() {
+function SignInContent() {
   const router = useRouter();
   const params = useSearchParams();
   const redirect = params.get("redirect") || "/chat";
@@ -155,5 +155,13 @@ export default function SignInPage() {
         </form>
       )}
     </AuthCard>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignInContent />
+    </Suspense>
   );
 }

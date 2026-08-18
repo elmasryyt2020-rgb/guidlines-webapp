@@ -1,14 +1,18 @@
 import { createBrowserClient } from "@supabase/ssr";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
 /**
  * Shared browser Supabase client with cookie-based auth.
  * The SDK automatically attaches the current session access token to every
  * request, so RLS policies using auth.jwt() work natively.
  */
-export const supabase = createBrowserClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase = createBrowserClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  cookieOptions: {
+    name: "sb-auth-token",
+  },
+});
 
 /**
  * Returns the shared authenticated Supabase client.
